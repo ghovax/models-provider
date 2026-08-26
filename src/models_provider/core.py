@@ -11,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 
 __all__ = [
     "ModelConfiguration",
+    "ModelUsage",
     "ModelProvider",
     "ModelRecord",
     "ModelCatalogue",
@@ -211,6 +212,29 @@ class ModelConfiguration:
     @property
     def identifier(self) -> str:
         return f"{self.provider}/{self.model}"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """Token and cost totals reported by one model implementation."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+
+    def combined_with(self, other: "ModelUsage") -> "ModelUsage":
+        """Add another usage record to this one."""
+        return ModelUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            cost_usd=self.cost_usd + other.cost_usd,
+        )
 
 
 @runtime_checkable
