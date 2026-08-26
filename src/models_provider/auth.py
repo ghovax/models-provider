@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextvars
 import hashlib
 import html
@@ -193,8 +194,14 @@ class ProviderAuthentication:
             headers=dict(profile.headers),
         )
 
-    def status(self, provider_identifier: str, *, store: CredentialStore | None = None) -> AuthenticationStatus:
-        profile = self.profile(provider_identifier)
+    def status(
+        self,
+        provider_identifier: str,
+        *,
+        environment_variables: tuple[str, ...] = (),
+        store: CredentialStore | None = None,
+    ) -> AuthenticationStatus:
+        profile = self.profile(provider_identifier, environment_variables=environment_variables)
         credentials = self._store_for(store).load(profile.identifier)
         if not isinstance(credentials, OAuthTokens):
             resolution = self.resolve_key(profile.identifier)
@@ -208,11 +215,12 @@ class ProviderAuthentication:
             profile.method,
             signed_in=True,
             expired=credentials.is_expired(),
-            account=credentials.account,
+            account=getattr(credentials, "account", ""),
         )
 
     def token(self, provider_identifier: str, *, store: CredentialStore | None = None) -> OAuthTokens:
-        credentials = self._store_for(store).load(provider_identifier)
+        provider = provider_identifier.strip().lower()
+        credentials = self._store_for(store).load(provider)
         if not isinstance(credentials, OAuthTokens):
             raise AuthenticationError(f"Not signed in to {provider_identifier}.")
         return credentials
@@ -279,7 +287,7 @@ def _jwt_claims(token: str) -> dict[str, Any]:
         _, payload, _ = token.split(".")
         decoded = json.loads(_b64url_decode(payload))
         return decoded if isinstance(decoded, dict) else {}
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
         return {}
 
 
@@ -336,12 +344,17 @@ _cursor_refresh_lock = asyncio.Lock()
 
 
 def _chatgpt_from_payload(payload: Mapping[str, Any], previous: ChatGPTTokens | None = None) -> ChatGPTTokens:
+    if not isinstance(payload, Mapping):
+        raise AuthenticationError("ChatGPT returned an invalid token response.")
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise AuthenticationError("ChatGPT returned no access token.")
     id_token = str(payload.get("id_token") or (previous.id_token if previous else ""))
     claims = _jwt_claims(id_token)
     auth_claim = claims.get("https://api.openai.com/auth")
     account_id = auth_claim.get("chatgpt_account_id", "") if isinstance(auth_claim, dict) else ""
     return ChatGPTTokens(
-        access_token=str(payload.get("access_token") or ""),
+        access_token=access_token,
         refresh_token=str(payload.get("refresh_token") or (previous.refresh_token if previous else "")),
         id_token=id_token,
         account_id=str(account_id or (previous.account_id if previous else "")),
@@ -385,12 +398,12 @@ async def valid_chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTT
         raise AuthenticationError("Not signed in to ChatGPT.")
     if not tokens.is_expired():
         return tokens
-    if not tokens.refresh_token:
-        raise AuthenticationError("ChatGPT session expired; sign in again.")
     async with _chatgpt_refresh_lock:
         current = chatgpt_tokens(selected_store) or tokens
         if not current.is_expired():
             return current
+        if not current.refresh_token:
+            raise AuthenticationError("ChatGPT session expired; sign in again.")
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
@@ -399,7 +412,7 @@ async def valid_chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTT
                 )
                 response.raise_for_status()
                 refreshed = _chatgpt_from_payload(response.json(), current)
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
             raise AuthenticationError(f"Could not refresh the ChatGPT session: {error}") from error
         _save("chatgpt", refreshed, selected_store)
         return refreshed
@@ -412,12 +425,12 @@ async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTok
         raise AuthenticationError("Not signed in to Cursor.")
     if not tokens.is_expired():
         return tokens
-    if not tokens.refresh_token:
-        raise AuthenticationError("Cursor session expired; sign in again.")
     async with _cursor_refresh_lock:
         current = cursor_tokens(selected_store) or tokens
         if not current.is_expired():
             return current
+        if not current.refresh_token:
+            raise AuthenticationError("Cursor session expired; sign in again.")
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
@@ -427,7 +440,7 @@ async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTok
                 )
                 response.raise_for_status()
                 refreshed = _cursor_from_payload(response.json(), current)
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
             raise AuthenticationError(f"Could not refresh the Cursor session: {error}") from error
         _save("cursor", refreshed, selected_store)
         return refreshed
@@ -471,7 +484,7 @@ class ChatGPTLoginFlow:
                 else:
                     flow._captured["error"] = query.get("error", ["Authorization failed."])[0]
                 body = f"<html><body>{html.escape(flow._captured.get('error', 'Signed in.'))}</body></html>".encode()
-                self.send_response(200)
+                self.send_response(200 if "code" in flow._captured else 400)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -479,7 +492,7 @@ class ChatGPTLoginFlow:
         self._server = HTTPServer(("127.0.0.1", 1455), CallbackHandler)
         self._server.timeout = 0.5
 
-    async def wait(self, timeout: float = 300.0) -> ChatGPTTokens:
+    async def wait(self, timeout: float = 300.0) -> ChatGPTTokens:  # noqa: ASYNC109
         if self._server is None:
             raise AuthenticationError("start() must be called before wait().")
         deadline = time.monotonic() + timeout
@@ -496,7 +509,7 @@ class ChatGPTLoginFlow:
                 tokens = _chatgpt_from_payload(response.json())
             _save("chatgpt", tokens, self._store)
             return tokens
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
             raise AuthenticationError(f"Could not complete ChatGPT sign-in: {error}") from error
         finally:
             await self.close()
@@ -524,7 +537,7 @@ class CursorLoginFlow:
     async def start(self) -> None:
         return
 
-    async def wait(self, timeout: float = 300.0) -> CursorTokens:
+    async def wait(self, timeout: float = 300.0) -> CursorTokens:  # noqa: ASYNC109
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._cancelled:
@@ -539,7 +552,7 @@ class CursorLoginFlow:
                 tokens = _cursor_from_payload(response.json())
                 _save("cursor", tokens, self._store)
                 return tokens
-            except httpx.HTTPStatusError as error:
+            except httpx.HTTPError as error:
                 raise AuthenticationError(f"Cursor sign-in failed: {error}") from error
         raise AuthenticationError("Cursor sign-in timed out.")
 
@@ -566,4 +579,17 @@ def request_cursor_headers(tokens: CursorTokens, request_identifier: str) -> dic
     payload_digest = hashlib.sha256(token_segments[1].encode()).hexdigest()[:8] if len(token_segments) > 1 else "00000000"
     token_digest = hashlib.sha256(tokens.access_token.encode()).hexdigest()[:8]
     checksum = f"{checksum}{payload_digest}/{token_digest}"
-    return {"Authorization": f"Bearer {tokens.access_token}", "Content-Type": "application/grpc-web+proto", "x-cursor-checksum": checksum, "x-cursor-client-version": "cli-2026.02.13-41ac335", "x-cursor-client-type": "cli", "x-cursor-timezone": time.tzname[0] if time.tzname else "UTC", "x-ghost-mode": "true", "x-cursor-streaming": "true", "x-request-id": request_identifier}
+    return {"Authorization": f"Bearer {tokens.access_token}", "Content-Type": "application/grpc-web+proto", "x-cursor-checksum": checksum, "x-cursor-client-version": "cli-2026.02.13-41ac335", "x-cursor-client-type": "cli", "x-cursor-timezone": _machine_time_zone(), "x-ghost-mode": "true", "x-cursor-streaming": "true", "x-request-id": request_identifier}
+
+
+def _machine_time_zone() -> str:
+    configured = os.environ.get("TZ", "").strip()
+    if configured:
+        return configured
+    try:
+        target = os.readlink("/etc/localtime")
+        if "zoneinfo/" in target:
+            return target.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return time.tzname[0] if time.tzname else "UTC"
