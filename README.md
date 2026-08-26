@@ -58,6 +58,10 @@ and sources do not belong here. The output is a LangChain
 `astream`, and tool-binding methods. `LiteLLMProvider` is the built-in generic
 implementation for the hosted providers represented in models.dev.
 
+Usage totals use the shared `ModelUsage` value from this package. Applications
+can aggregate those values with `combined_with` and expose them by the model
+identifier they used.
+
 For applications that need a different transport or an OAuth-specific model,
 `ProviderRegistry` is the extension point:
 
