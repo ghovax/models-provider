@@ -9,7 +9,7 @@ from typing import Any, Iterator
 
 from langchain_core.language_models import BaseChatModel
 
-from models_provider.core import ModelSpec
+from models_provider.core import ModelConfiguration
 
 __all__ = ["LangMeshProvider"]
 
@@ -32,7 +32,7 @@ class LangMeshProvider:
 
     def create(
         self,
-        spec: ModelSpec,
+        configuration: ModelConfiguration,
         *,
         working_directory: Path,
         session_id: str = "",
@@ -41,30 +41,30 @@ class LangMeshProvider:
         from langmesh.base.configuration import ProviderCredential
         from langmesh.runtime.runtime import build_chat_model
 
-        configuration = self._configuration.model_copy(deep=True)
+        langmesh_configuration = self._configuration.model_copy(deep=True)
         for provider, value in self._providers.items():
-            credential = configuration.providers.get(provider) or ProviderCredential()
+            credential = langmesh_configuration.providers.get(provider) or ProviderCredential()
             update = {"api_key": value} if isinstance(value, str) else dict(value)
-            configuration.providers[provider] = credential.model_copy(update=update)
+            langmesh_configuration.providers[provider] = credential.model_copy(update=update)
         agent = AgentConfiguration(
-            provider=spec.provider,
-            model=spec.model,
-            reasoning_effort=spec.reasoning_effort or "high",
+            provider=configuration.provider,
+            model=configuration.model,
+            reasoning_effort=configuration.reasoning_effort or "high",
         )
         model = build_chat_model(
-            spec.identifier,
-            configuration,
+            configuration.identifier,
+            langmesh_configuration,
             agent,
             str(working_directory.resolve()),
-            session_id=session_id or spec.session_id,
+            session_id=session_id or configuration.session_id,
         )
         updates = {
             key: value
             for key, value in {
-                "temperature": spec.temperature,
-                "timeout": spec.timeout_seconds,
-                "context_length": spec.context_length,
-                **dict(spec.extra),
+                "temperature": configuration.temperature,
+                "timeout": configuration.timeout_seconds,
+                "context_length": configuration.context_length,
+                **dict(configuration.extra),
             }.items()
             if key in model.model_fields
         }
