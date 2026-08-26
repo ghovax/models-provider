@@ -21,6 +21,9 @@ packages = ["src/models_provider"]
 [tool.hatch.build]
 include = ["src/models_provider/**/*.py", "src/models_provider/py.typed"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
