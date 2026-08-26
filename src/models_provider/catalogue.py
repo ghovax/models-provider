@@ -25,14 +25,14 @@ def load_catalogue(
         raise ValueError("timeout_seconds must be positive")
     import httpx
 
-    own_client = client is None
+    client_was_created = client is None
     http_client = client or httpx.Client(timeout=timeout_seconds)
     try:
         response = http_client.get(url)
         response.raise_for_status()
         payload: Any = response.json()
     finally:
-        if own_client:
+        if client_was_created:
             http_client.close()
     if not isinstance(payload, Mapping):
         raise ValueError("models.dev returned a non-object catalogue")
