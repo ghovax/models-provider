@@ -1,0 +1,193 @@
+"""A small, independent LiteLLM-backed LangChain model implementation."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+import litellm
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field, SecretStr
+
+from .core import ModelCatalogue, ModelConfiguration, ProviderRegistry
+
+
+_SDK_PREFIXES = {
+    "@ai-sdk/anthropic": "anthropic",
+    "@ai-sdk/amazon-bedrock": "bedrock",
+    "@ai-sdk/azure": "azure",
+    "@ai-sdk/cerebras": "cerebras",
+    "@ai-sdk/cohere": "cohere",
+    "@ai-sdk/deepinfra": "deepinfra",
+    "@ai-sdk/google": "gemini",
+    "@ai-sdk/groq": "groq",
+    "@ai-sdk/mistral": "mistral",
+    "@ai-sdk/openai": "openai",
+    "@ai-sdk/openai-compatible": "openai",
+    "@ai-sdk/perplexity": "perplexity",
+    "@ai-sdk/togetherai": "together_ai",
+    "@ai-sdk/xai": "xai",
+    "@openrouter/ai-sdk-provider": "openrouter",
+}
+
+
+class LiteLLMChatModel(BaseChatModel):
+    """A provider-qualified model usable by any LangChain-compatible application."""
+
+    model: str
+    api_key: SecretStr | None = None
+    api_base: str | None = None
+    temperature: float = 0.0
+    timeout: float | None = 300.0
+    reasoning_effort: str | None = None
+    context_length: int = 0
+    default_headers: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def _llm_type(self) -> str:
+        return "models-provider-litellm"
+
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        return {"model": self.model, "api_base": self.api_base, "temperature": self.temperature}
+
+    def context_window(self) -> int:
+        return self.context_length
+
+    @staticmethod
+    def _message(message: BaseMessage) -> dict[str, Any]:
+        if isinstance(message, SystemMessage):
+            role = "system"
+        elif isinstance(message, ToolMessage):
+            role = "tool"
+        elif isinstance(message, AIMessage):
+            role = "assistant"
+        elif isinstance(message, HumanMessage):
+            role = "user"
+        else:
+            role = "user"
+        item: dict[str, Any] = {"role": role, "content": message.content}
+        if isinstance(message, ToolMessage):
+            item["tool_call_id"] = message.tool_call_id
+        return item
+
+    def _parameters(self, **kwargs: Any) -> dict[str, Any]:
+        params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
+        if self.api_key is not None:
+            params["api_key"] = self.api_key.get_secret_value()
+        if self.api_base:
+            params["api_base"] = self.api_base
+        if self.timeout is not None:
+            params["timeout"] = self.timeout
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        if self.default_headers:
+            params["extra_headers"] = dict(self.default_headers)
+        params.update({key: value for key, value in kwargs.items() if value is not None})
+        return params
+
+    def _response(self, response: Any) -> ChatResult:
+        choices = getattr(response, "choices", ()) or ()
+        if not choices:
+            return ChatResult(generations=[])
+        source = getattr(choices[0], "message", None)
+        content = getattr(source, "content", "") or ""
+        tool_calls: list[dict[str, Any]] = []
+        for call in getattr(source, "tool_calls", ()) or ():
+            function = getattr(call, "function", None)
+            raw = getattr(function, "arguments", "{}") if function else "{}"
+            try:
+                arguments = json.loads(raw)
+            except (TypeError, ValueError):
+                arguments = raw
+            tool_calls.append(
+                {
+                    "name": getattr(function, "name", ""),
+                    "args": arguments,
+                    "id": getattr(call, "id", ""),
+                }
+            )
+        message = AIMessage(content=content, tool_calls=tool_calls)
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    def _generate(
+        self, messages: Sequence[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+    ) -> ChatResult:
+        parameters = self._parameters(stop=stop, **kwargs)
+        response = litellm.completion(
+            messages=[self._message(message) for message in messages], **parameters
+        )
+        return self._response(response)
+
+    async def _agenerate(
+        self, messages: Sequence[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+    ) -> ChatResult:
+        parameters = self._parameters(stop=stop, **kwargs)
+        response = await litellm.acompletion(
+            messages=[self._message(message) for message in messages], **parameters
+        )
+        return self._response(response)
+
+
+class LiteLLMProvider:
+    """Concrete models.dev-to-LiteLLM implementation for common hosted providers."""
+
+    def __init__(
+        self,
+        catalogue: ModelCatalogue,
+        *,
+        api_keys: Mapping[str, str] | None = None,
+        api_bases: Mapping[str, str] | None = None,
+    ) -> None:
+        self.catalogue = catalogue
+        self.api_keys = dict(api_keys or {})
+        self.api_bases = dict(api_bases or {})
+
+    def create(self, configuration: ModelConfiguration) -> LiteLLMChatModel:
+        record = self.catalogue.find(configuration.identifier)
+        provider = self.catalogue.provider(configuration.provider)
+        if record is None:
+            raise ValueError(f"model {configuration.identifier!r} is not in the supplied catalogue")
+        if provider is None:
+            raise ValueError(f"provider {configuration.provider!r} is not in the supplied catalogue")
+        prefix = _SDK_PREFIXES.get(provider.npm, "openai")
+        key = self.api_keys.get(provider.identifier, "")
+        return LiteLLMChatModel(
+            model=f"{prefix}/{record.model}",
+            api_key=SecretStr(key) if key else None,
+            api_base=self.api_bases.get(provider.identifier) or provider.api_base or None,
+            temperature=configuration.temperature,
+            timeout=configuration.timeout_seconds,
+            reasoning_effort=configuration.reasoning_effort,
+            context_length=configuration.context_length or record.context_length,
+        )
+
+    def scope(self) -> Any:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
+def provider_registry(
+    catalogue: ModelCatalogue,
+    *,
+    api_keys: Mapping[str, str] | None = None,
+    api_bases: Mapping[str, str] | None = None,
+) -> ProviderRegistry:
+    """Return a registry with every catalogue provider routed through LiteLLM."""
+    implementation = LiteLLMProvider(catalogue, api_keys=api_keys, api_bases=api_bases)
+    registry = ProviderRegistry(catalogue)
+    for provider in catalogue.providers():
+        registry.register(
+            provider.identifier,
+            lambda configuration, _record, implementation=implementation: implementation.create(
+                configuration
+            ),
+        )
+    return registry
+
+
+__all__ = ["LiteLLMChatModel", "LiteLLMProvider", "provider_registry"]
