@@ -57,13 +57,15 @@ class ModelUsage:
         input_tokens = _integer(value.get("input_tokens", value.get("prompt_tokens")))
         output_tokens = _integer(value.get("output_tokens", value.get("completion_tokens")))
         total_tokens = _integer(value.get("total_tokens")) or input_tokens + output_tokens
+        output_details = value.get("output_token_details") or value.get("completion_tokens_details") or {}
+        input_details = value.get("input_token_details") or value.get("prompt_tokens_details") or {}
         return cls(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
-            reasoning_tokens=_integer(value.get("reasoning_tokens", value.get("reasoning_tokens_details", {}).get("reasoning_tokens") if isinstance(value.get("reasoning_tokens_details"), Mapping) else 0)),
-            cache_read_tokens=_integer(value.get("cache_read_tokens", value.get("cached_tokens"))),
-            cache_write_tokens=_integer(value.get("cache_write_tokens")),
+            reasoning_tokens=_integer(value.get("reasoning_tokens", output_details.get("reasoning_tokens"))),
+            cache_read_tokens=_integer(value.get("cache_read_tokens", value.get("cached_tokens", input_details.get("cache_read", input_details.get("cached_tokens"))))),
+            cache_write_tokens=_integer(value.get("cache_write_tokens", input_details.get("cache_creation", input_details.get("cache_write_tokens")))),
             input_audio_tokens=_integer(value.get("input_audio_tokens")),
             output_audio_tokens=_integer(value.get("output_audio_tokens")),
             cost_usd=_decimal(value.get("cost_usd", value.get("cost"))),
@@ -127,4 +129,3 @@ class UsageLedger:
     def snapshot(self) -> dict[str, ModelUsage]:
         with self._lock:
             return dict(self._totals)
-

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
+import base64
+import hashlib
 import logging
 import os
 import re
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -26,14 +26,14 @@ from .auth import (
 )
 
 __all__ = [
-    "APPEND_PATH", "AVAILABLE_MODELS_URL", "CLIENT_TYPE", "CLIENT_VERSION", "MODELS_URL",
+    "APPEND_PATH", "AGENT_OPEN_URL", "AGENT_PRIVACY_URL", "AVAILABLE_MODELS_URL", "CLIENT_TYPE", "CLIENT_VERSION", "GET_ME_URL", "MODELS_URL",
     "ORIGINATOR", "RESPONSES_URL", "RUN_HOSTS", "RUN_PATH", "STATUS_RESOURCE_EXHAUSTED",
     "STATUS_UNAUTHENTICATED", "UNKNOWN_CONTEXT_WINDOW", "cached_chatgpt_models",
     "cached_cursor_models", "capture_usage_headers", "clear_chatgpt_models_cache",
     "clear_cursor_models_cache", "clear_usage_snapshot", "display_cursor_account",
     "fetch_chatgpt_models", "fetch_cursor_models", "get_usage_snapshot", "machine_time_zone",
     "observed_context_window", "record_context_window", "request_chatgpt_headers",
-    "request_cursor_headers", "set_usage_snapshot",
+    "request_cursor_headers", "set_usage_snapshot", "USABLE_MODELS_URL",
 ]
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -43,8 +43,12 @@ ORIGINATOR = "codex_cli_rs"
 
 RUN_PATH = "/agent.v1.AgentService/RunSSE"
 APPEND_PATH = "/aiserver.v1.BidiService/BidiAppend"
-RUN_HOSTS = ("https://api2.cursor.sh", "https://agent.api5.cursor.sh", "https://agentn.api5.cursor.sh")
+AGENT_PRIVACY_URL = "https://agent.api5.cursor.sh"
+AGENT_OPEN_URL = "https://agentn.api5.cursor.sh"
+RUN_HOSTS = ("https://api2.cursor.sh", AGENT_PRIVACY_URL, AGENT_OPEN_URL)
+USABLE_MODELS_URL = "https://api2.cursor.sh/agent.v1.AgentService/GetUsableModels"
 AVAILABLE_MODELS_URL = "https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels"
+GET_ME_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetMe"
 STATUS_RESOURCE_EXHAUSTED = 8
 STATUS_UNAUTHENTICATED = 16
 CLIENT_TYPE = "cli"
@@ -54,7 +58,6 @@ _chatgpt_models: dict[str, dict[str, Any]] = {}
 _cursor_models: dict[str, dict[str, Any]] = {}
 _observed_windows: dict[str, int] = {}
 _usage_snapshot: dict[str, Any] | None = None
-_model_lock = asyncio.Lock()
 logger = logging.getLogger(__name__)
 
 
@@ -80,14 +83,84 @@ async def fetch_cursor_models() -> dict[str, dict[str, Any]]:
         return dict(_cursor_models)
     try:
         tokens = await valid_cursor_tokens()
-        headers = {**request_cursor_headers(tokens, str(uuid.uuid4())), "Content-Type": "application/json", "Accept": "application/json"}
+        headers = {
+            **request_cursor_headers(tokens, str(uuid.uuid4())),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "connect-protocol-version": "1",
+        }
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(AVAILABLE_MODELS_URL, headers=headers, json={"isNightly": False, "excludeMaxNamedModels": True})
-            response.raise_for_status()
-            for entry in response.json().get("models", []):
-                if isinstance(entry, dict) and entry.get("name"):
-                    model_identifier = str(entry["name"])
-                    _cursor_models[model_identifier] = {"name": model_identifier, "context": 0}
+            usable_response = await client.post(
+                USABLE_MODELS_URL, headers=headers, json={"customModelIds": []}
+            )
+            usable_response.raise_for_status()
+            usable_entries = [
+                entry
+                for entry in usable_response.json().get("models", [])
+                if isinstance(entry, dict)
+            ]
+            variants_response = await client.post(
+                AVAILABLE_MODELS_URL,
+                headers=headers,
+                json={
+                    "isNightly": False,
+                    "excludeMaxNamedModels": True,
+                    "additionalModelNames": [],
+                    "useModelParameters": True,
+                    "useReactModelPicker": True,
+                },
+            )
+            variants_response.raise_for_status()
+            variants: dict[str, dict[str, Any]] = {}
+            for entry in variants_response.json().get("models", []):
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    continue
+                for variant in entry.get("variants", []):
+                    if not isinstance(variant, dict):
+                        continue
+                    parameters = {
+                        str(item.get("id")): str(item.get("value"))
+                        for item in variant.get("parameterValues", [])
+                        if isinstance(item, dict) and item.get("id") is not None
+                    }
+                    context_match = re.fullmatch(
+                        r"(\d+(?:\.\d+)?)([km])?", parameters.get("context", "").lower()
+                    )
+                    context = (
+                        round(
+                            float(context_match.group(1))
+                            * {"k": 1_000, "m": 1_000_000}.get(
+                                context_match.group(2) or "", 1
+                            )
+                        )
+                        if context_match
+                        else 0
+                    )
+                    variants[str(entry["name"])] = {
+                        "server_model": str(entry.get("serverModelName") or entry["name"]),
+                        "maximum_mode": variant.get("isMaxMode") is True,
+                        "parameters": tuple(sorted(parameters.items())),
+                        "context": context,
+                    }
+            if not usable_entries:
+                usable_entries = [
+                    {"modelId": model_name, "displayName": model_name}
+                    for model_name in variants
+                ]
+            for entry in usable_entries:
+                model_identifier = entry.get("modelId") or entry.get("displayModelId")
+                if not model_identifier:
+                    continue
+                model_name = str(model_identifier)
+                variant = variants.get(model_name)
+                if variant is None:
+                    names = [name for name in variants if model_name.startswith(name)]
+                    variant = variants[max(names, key=len)] if names else None
+                _cursor_models[model_name] = {
+                    "name": entry.get("displayName") or model_name,
+                    "context": variant.get("context", 0) if variant else 0,
+                    "variant": variant,
+                }
     except (AuthenticationError, httpx.HTTPError, ValueError, TypeError):
         return {}
     return dict(_cursor_models)
@@ -134,6 +207,25 @@ def observed_context_window(model_identifier: str) -> int:
 async def display_cursor_account(tokens: CursorTokens) -> str:
     if tokens.account:
         return tokens.account
+    try:
+        headers = {
+            **request_cursor_headers(tokens, str(uuid.uuid4())),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "connect-protocol-version": "1",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(GET_ME_URL, headers=headers, json={})
+            response.raise_for_status()
+            payload = response.json()
+        for key in ("email", "userEmail", "cachedEmail"):
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(value, str) and value.strip():
+                updated = CursorTokens(tokens.access_token, tokens.refresh_token, value.strip(), tokens.expires_at)
+                current_credential_store().save("cursor", updated)
+                return value.strip()
+    except (httpx.HTTPError, ValueError, TypeError):
+        pass
     return ""
 
 

@@ -148,15 +148,15 @@ class ProviderAuthentication:
 
     def __init__(
         self,
-        profiles: Mapping[str, ProviderAuthProfile] = (),
+        profiles: Mapping[str, ProviderAuthProfile] | None = None,
         *,
-        api_keys: Mapping[str, str] = (),
-        api_bases: Mapping[str, str] = (),
+        api_keys: Mapping[str, str] | None = None,
+        api_bases: Mapping[str, str] | None = None,
         store: CredentialStore | None = None,
     ) -> None:
-        self._profiles = {key.lower(): value for key, value in profiles.items()}
-        self._api_keys = dict(api_keys)
-        self._api_bases = dict(api_bases)
+        self._profiles = {key.lower(): value for key, value in (profiles or {}).items()}
+        self._api_keys = dict(api_keys or {})
+        self._api_bases = dict(api_bases or {})
         self._store = store
 
     def profile(self, provider_identifier: str, *, environment_variables: tuple[str, ...] = ()) -> ProviderAuthProfile:
@@ -164,7 +164,8 @@ class ProviderAuthentication:
         existing = self._profiles.get(provider)
         if existing is not None:
             return existing
-        return ProviderAuthProfile(provider, environment_variables=environment_variables)
+        method = "oauth" if provider in {"chatgpt", "cursor"} else "api_key"
+        return ProviderAuthProfile(provider, environment_variables=environment_variables, method=method)
 
     def _store_for(self, store: CredentialStore | None) -> CredentialStore:
         return store or self._store or current_credential_store()
@@ -196,7 +197,12 @@ class ProviderAuthentication:
         profile = self.profile(provider_identifier)
         credentials = self._store_for(store).load(profile.identifier)
         if not isinstance(credentials, OAuthTokens):
-            return AuthenticationStatus(profile.identifier, profile.method)
+            resolution = self.resolve_key(profile.identifier)
+            return AuthenticationStatus(
+                profile.identifier,
+                profile.method,
+                signed_in=bool(resolution.api_key),
+            )
         return AuthenticationStatus(
             profile.identifier,
             profile.method,
@@ -211,6 +217,20 @@ class ProviderAuthentication:
             raise AuthenticationError(f"Not signed in to {provider_identifier}.")
         return credentials
 
+    def flow(self, provider_identifier: str, *, store: CredentialStore | None = None) -> ChatGPTLoginFlow | CursorLoginFlow:
+        """Create the provider's login flow; the host decides how to open its URL."""
+        provider = provider_identifier.strip().lower()
+        selected_store = store or self._store or current_credential_store()
+        if provider == "chatgpt":
+            return ChatGPTLoginFlow(selected_store)
+        if provider == "cursor":
+            return CursorLoginFlow(selected_store)
+        raise AuthenticationError(f"{provider_identifier!r} does not expose a built-in OAuth flow.")
+
+    def sign_out(self, provider_identifier: str, *, store: CredentialStore | None = None) -> None:
+        """Remove account credentials from the caller-owned store."""
+        self._store_for(store).clear(provider_identifier.strip().lower())
+
 
 @dataclass(frozen=True, slots=True)
 class OAuthTokens:
@@ -219,7 +239,6 @@ class OAuthTokens:
     access_token: str
     refresh_token: str
     expires_at: float
-    account: str = ""
 
     def is_expired(self, leeway_seconds: float = 60.0) -> bool:
         return time.time() >= self.expires_at - leeway_seconds
@@ -238,7 +257,7 @@ def _jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ChatGPTTokens(OAuthTokens):
     """ChatGPT subscription credentials."""
 
@@ -246,16 +265,44 @@ class ChatGPTTokens(OAuthTokens):
     account_id: str = ""
     email: str = ""
 
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: str,
+        id_token: str = "",
+        account_id: str = "",
+        email: str = "",
+        expires_at: float = 0.0,
+    ) -> None:
+        object.__setattr__(self, "access_token", access_token)
+        object.__setattr__(self, "refresh_token", refresh_token)
+        object.__setattr__(self, "expires_at", expires_at)
+        object.__setattr__(self, "id_token", id_token)
+        object.__setattr__(self, "account_id", account_id)
+        object.__setattr__(self, "email", email)
+
     @property
     def account(self) -> str:
         return self.email or self.account_id
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class CursorTokens(OAuthTokens):
     """Cursor subscription credentials."""
 
-    pass
+    account: str = ""
+
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: str,
+        account: str,
+        expires_at: float,
+    ) -> None:
+        object.__setattr__(self, "access_token", access_token)
+        object.__setattr__(self, "refresh_token", refresh_token)
+        object.__setattr__(self, "expires_at", expires_at)
+        object.__setattr__(self, "account", account)
 
 
 _chatgpt_refresh_lock = asyncio.Lock()
@@ -270,11 +317,10 @@ def _chatgpt_from_payload(payload: Mapping[str, Any], previous: ChatGPTTokens | 
     return ChatGPTTokens(
         access_token=str(payload.get("access_token") or ""),
         refresh_token=str(payload.get("refresh_token") or (previous.refresh_token if previous else "")),
-        expires_at=time.time() + float(payload.get("expires_in") or 3600),
-        account=str(account_id or (previous.account_id if previous else "")),
         id_token=id_token,
         account_id=str(account_id or (previous.account_id if previous else "")),
         email=str(claims.get("email") or (previous.email if previous else "")),
+        expires_at=time.time() + float(payload.get("expires_in") or 3600),
     )
 
 
@@ -490,4 +536,8 @@ def request_cursor_headers(tokens: CursorTokens, request_identifier: str) -> dic
         obfuscated[index] = ((obfuscated[index] ^ previous_byte) + index) & 0xFF
         previous_byte = obfuscated[index]
     checksum = base64.urlsafe_b64encode(bytes(obfuscated)).rstrip(b"=").decode()
-    return {"Authorization": f"Bearer {tokens.access_token}", "Content-Type": "application/grpc-web+proto", "x-cursor-checksum": checksum, "x-cursor-client-version": "cli-2026.02.13-41ac335", "x-cursor-client-type": "cli", "x-ghost-mode": "true", "x-cursor-streaming": "true", "x-request-id": request_identifier}
+    token_segments = tokens.access_token.split(".")
+    payload_digest = hashlib.sha256(token_segments[1].encode()).hexdigest()[:8] if len(token_segments) > 1 else "00000000"
+    token_digest = hashlib.sha256(tokens.access_token.encode()).hexdigest()[:8]
+    checksum = f"{checksum}{payload_digest}/{token_digest}"
+    return {"Authorization": f"Bearer {tokens.access_token}", "Content-Type": "application/grpc-web+proto", "x-cursor-checksum": checksum, "x-cursor-client-version": "cli-2026.02.13-41ac335", "x-cursor-client-type": "cli", "x-cursor-timezone": time.tzname[0] if time.tzname else "UTC", "x-ghost-mode": "true", "x-cursor-streaming": "true", "x-request-id": request_identifier}
