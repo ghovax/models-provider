@@ -9,6 +9,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
 
+from .usage import ModelUsage
+
 __all__ = [
     "ModelConfiguration",
     "ModelUsage",
@@ -75,6 +77,8 @@ class ModelRecord:
     input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
     reasoning_cost_per_million: float | None = None
+    cache_read_cost_per_million: float | None = None
+    cache_write_cost_per_million: float | None = None
     release_date: str = ""
     last_updated: str = ""
     knowledge_cutoff: str = ""
@@ -111,6 +115,8 @@ class ModelRecord:
             input_cost_per_million=_number(costs.get("input")),
             output_cost_per_million=_number(costs.get("output")),
             reasoning_cost_per_million=_number(costs.get("reasoning")),
+            cache_read_cost_per_million=_number(costs.get("cache_read")),
+            cache_write_cost_per_million=_number(costs.get("cache_write")),
             release_date=_text(payload.get("release_date")),
             last_updated=_text(payload.get("last_updated")),
             knowledge_cutoff=_text(payload.get("knowledge")),
@@ -212,29 +218,6 @@ class ModelConfiguration:
     @property
     def identifier(self) -> str:
         return f"{self.provider}/{self.model}"
-
-
-@dataclass(frozen=True, slots=True)
-class ModelUsage:
-    """Token and cost totals reported by one model implementation."""
-
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    cache_write_tokens: int = 0
-    cost_usd: float = 0.0
-
-    def combined_with(self, other: "ModelUsage") -> "ModelUsage":
-        """Add another usage record to this one."""
-        return ModelUsage(
-            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
-            completion_tokens=self.completion_tokens + other.completion_tokens,
-            total_tokens=self.total_tokens + other.total_tokens,
-            cached_tokens=self.cached_tokens + other.cached_tokens,
-            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
-            cost_usd=self.cost_usd + other.cost_usd,
-        )
 
 
 @runtime_checkable
