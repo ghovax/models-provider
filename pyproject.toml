@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "models-provider"
+version = "0.1.0"
+description = "A small, storage-neutral model provider boundary for Python applications."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Giovanni Gravili" }]
+dependencies = ["langchain-core>=1.0"]
+
+[project.optional-dependencies]
+langmesh = ["langmesh @ git+https://github.com/ghovax/langmesh.git@dc24de92627942eb95f7a499640df7f1ccabf1bf"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/models_provider"]
+
+[tool.hatch.build]
+include = ["src/models_provider/**/*.py", "src/models_provider/py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "ASYNC", "RUF006", "RUF012", "RUF018", "RUF019"]
