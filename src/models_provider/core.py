@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
@@ -23,7 +22,6 @@ class ModelConfiguration:
     temperature: float = 0.0
     timeout_seconds: float | None = 300.0
     context_length: int = 0
-    session_id: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -39,7 +37,6 @@ class ModelConfiguration:
             raise ValueError("context_length cannot be negative")
         object.__setattr__(self, "provider", provider)
         object.__setattr__(self, "model", model)
-        object.__setattr__(self, "session_id", self.session_id.strip())
 
     @property
     def identifier(self) -> str:
@@ -54,9 +51,6 @@ class ModelProvider(Protocol):
     def create(
         self,
         configuration: ModelConfiguration,
-        *,
-        working_directory: Path,
-        session_id: str = "",
     ) -> BaseChatModel:
         """Create a model for one request context."""
         ...
@@ -66,7 +60,7 @@ class ModelProvider(Protocol):
         ...
 
 
-ProviderFactory = Callable[[ModelConfiguration, Path, str], BaseChatModel]
+ProviderFactory = Callable[[ModelConfiguration], BaseChatModel]
 
 
 class ProviderRegistry:
@@ -85,9 +79,6 @@ class ProviderRegistry:
     def create(
         self,
         configuration: ModelConfiguration,
-        *,
-        working_directory: Path,
-        session_id: str = "",
     ) -> BaseChatModel:
         """Build a model using the factory registered for its provider."""
         try:
@@ -97,7 +88,7 @@ class ProviderRegistry:
             raise ValueError(
                 f"no model provider registered for {configuration.provider!r}; available: {available}"
             ) from error
-        return factory(configuration, working_directory, session_id or configuration.session_id)
+        return factory(configuration)
 
     def scope(self) -> Any:
         """A no-op scope so registries satisfy the same application contract as adapters."""

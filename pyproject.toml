@@ -12,17 +12,11 @@ license = { text = "MIT" }
 authors = [{ name = "Giovanni Gravili" }]
 dependencies = ["langchain-core>=1.0"]
 
-[project.optional-dependencies]
-langmesh = ["langmesh @ git+https://github.com/ghovax/langmesh.git@dc24de92627942eb95f7a499640df7f1ccabf1bf"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/models_provider"]
 
 [tool.hatch.build]
 include = ["src/models_provider/**/*.py", "src/models_provider/py.typed"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.ruff]
 line-length = 100
