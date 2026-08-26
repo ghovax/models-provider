@@ -231,6 +231,32 @@ class ProviderAuthentication:
         """Remove account credentials from the caller-owned store."""
         self._store_for(store).clear(provider_identifier.strip().lower())
 
+    async def valid_token(self, provider_identifier: str, *, store: CredentialStore | None = None) -> OAuthTokens:
+        """Return a live OAuth token and refresh it once when the provider supports refresh."""
+        provider = provider_identifier.strip().lower()
+        if provider == "chatgpt":
+            return await valid_chatgpt_tokens(store or self._store)
+        if provider == "cursor":
+            return await valid_cursor_tokens(store or self._store)
+        raise AuthenticationError(f"{provider_identifier!r} has no built-in OAuth refresh adapter.")
+
+    async def request_headers(
+        self,
+        provider_identifier: str,
+        *,
+        request_identifier: str = "",
+        session_identifier: str = "",
+        store: CredentialStore | None = None,
+    ) -> dict[str, str]:
+        """Build authenticated headers for an account-backed provider without exposing its token."""
+        provider = provider_identifier.strip().lower()
+        token = await self.valid_token(provider, store=store)
+        if provider == "chatgpt" and isinstance(token, ChatGPTTokens):
+            return request_chatgpt_headers(token, session_identifier)
+        if provider == "cursor" and isinstance(token, CursorTokens):
+            return request_cursor_headers(token, request_identifier or str(uuid.uuid4()))
+        raise AuthenticationError(f"No request-header adapter exists for {provider_identifier!r}.")
+
 
 @dataclass(frozen=True, slots=True)
 class OAuthTokens:

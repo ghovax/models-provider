@@ -67,13 +67,24 @@ For applications that need a different transport or an OAuth-specific model,
 
 ```python
 from models_provider import ModelConfiguration, ModelRecord, ProviderRegistry
+from langchain_core.language_models import BaseChatModel
 
 registry = ProviderRegistry(catalogue)
-registry.register(
-    "my-provider",
-    lambda configuration, record: make_my_chat_model(configuration, record),
+
+def build_local_openai_compatible_model(
+    configuration: ModelConfiguration, record: ModelRecord | None
+) -> BaseChatModel:
+    # Replace this factory with the application's local endpoint client.
+    return LocalOpenAICompatibleModel(
+        model=configuration.model,
+        api_base="http://127.0.0.1:11434/v1",
+        context_length=record.context_length if record else 0,
+    )
+
+registry.register("custom", build_local_openai_compatible_model)
+model = registry.create(
+    ModelConfiguration(provider="custom", model="llama3.1:8b")
 )
-model = registry.create(ModelConfiguration(provider="my-provider", model="demo"))
 ```
 
 The factory receives the selected `ModelRecord | None`, allowing an
