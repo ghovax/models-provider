@@ -10,11 +10,11 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
 
-__all__ = ["ModelProvider", "ModelSpec", "ProviderRegistry"]
+__all__ = ["ModelConfiguration", "ModelProvider", "ProviderRegistry"]
 
 
 @dataclass(frozen=True, slots=True)
-class ModelSpec:
+class ModelConfiguration:
     """The model choice and request defaults an application gives a provider."""
 
     provider: str
@@ -53,7 +53,7 @@ class ModelProvider(Protocol):
 
     def create(
         self,
-        spec: ModelSpec,
+        configuration: ModelConfiguration,
         *,
         working_directory: Path,
         session_id: str = "",
@@ -66,7 +66,7 @@ class ModelProvider(Protocol):
         ...
 
 
-ProviderFactory = Callable[[ModelSpec, Path, str], BaseChatModel]
+ProviderFactory = Callable[[ModelConfiguration, Path, str], BaseChatModel]
 
 
 class ProviderRegistry:
@@ -84,20 +84,20 @@ class ProviderRegistry:
 
     def create(
         self,
-        spec: ModelSpec,
+        configuration: ModelConfiguration,
         *,
         working_directory: Path,
         session_id: str = "",
     ) -> BaseChatModel:
         """Build a model using the factory registered for its provider."""
         try:
-            factory = self._factories[spec.provider]
+            factory = self._factories[configuration.provider]
         except KeyError as error:
             available = ", ".join(sorted(self._factories)) or "none"
             raise ValueError(
-                f"no model provider registered for {spec.provider!r}; available: {available}"
+                f"no model provider registered for {configuration.provider!r}; available: {available}"
             ) from error
-        return factory(spec, working_directory, session_id or spec.session_id)
+        return factory(configuration, working_directory, session_id or configuration.session_id)
 
     def scope(self) -> Any:
         """A no-op scope so registries satisfy the same application contract as adapters."""
