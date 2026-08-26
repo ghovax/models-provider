@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from typing import Any
 
 import litellm
@@ -12,7 +13,9 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
+from .auth import ProviderAuthentication
 from .core import ModelCatalogue, ModelConfiguration, ProviderRegistry
+from .usage import ModelUsage
 
 
 _SDK_PREFIXES = {
@@ -46,6 +49,10 @@ class LiteLLMChatModel(BaseChatModel):
     context_length: int = 0
     default_headers: dict[str, str] = Field(default_factory=dict)
 
+    provider_identifier: str = ""
+    provider_environment_variables: tuple[str, ...] = ()
+    _authentication: ProviderAuthentication | None = None
+
     @property
     def _llm_type(self) -> str:
         return "models-provider-litellm"
@@ -76,16 +83,29 @@ class LiteLLMChatModel(BaseChatModel):
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
         params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
-        if self.api_key is not None:
+        resolved = None
+        if self._authentication is not None and self.provider_identifier:
+            resolved = self._authentication.resolve_key(
+                self.provider_identifier,
+                environment_variables=self.provider_environment_variables,
+            )
+        if resolved is not None and resolved.api_key:
+            params["api_key"] = resolved.api_key
+        elif self.api_key is not None:
             params["api_key"] = self.api_key.get_secret_value()
-        if self.api_base:
+        if resolved is not None and resolved.api_base:
+            params["api_base"] = resolved.api_base
+        elif self.api_base:
             params["api_base"] = self.api_base
         if self.timeout is not None:
             params["timeout"] = self.timeout
         if self.reasoning_effort:
             params["reasoning_effort"] = self.reasoning_effort
-        if self.default_headers:
-            params["extra_headers"] = dict(self.default_headers)
+        headers = dict(self.default_headers)
+        if resolved is not None:
+            headers = {**resolved.headers, **headers}
+        if headers:
+            params["extra_headers"] = headers
         params.update({key: value for key, value in kwargs.items() if value is not None})
         return params
 
@@ -110,7 +130,22 @@ class LiteLLMChatModel(BaseChatModel):
                     "id": getattr(call, "id", ""),
                 }
             )
-        message = AIMessage(content=content, tool_calls=tool_calls)
+        raw_usage = getattr(response, "usage", None)
+        usage_payload = raw_usage if isinstance(raw_usage, Mapping) else getattr(raw_usage, "__dict__", {})
+        usage = ModelUsage.from_mapping(usage_payload)
+        usage_metadata = {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+            "input_token_details": {"cache_read": usage.cache_read_tokens, "cache_creation": usage.cache_write_tokens},
+            "output_token_details": {"reasoning": usage.reasoning_tokens},
+        }
+        message = AIMessage(
+            content=content,
+            tool_calls=tool_calls,
+            usage_metadata=usage_metadata,
+            response_metadata={"models_provider_usage": asdict(usage)},
+        )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _generate(
@@ -141,10 +176,14 @@ class LiteLLMProvider:
         *,
         api_keys: Mapping[str, str] | None = None,
         api_bases: Mapping[str, str] | None = None,
+        authentication: ProviderAuthentication | None = None,
     ) -> None:
         self.catalogue = catalogue
         self.api_keys = dict(api_keys or {})
         self.api_bases = dict(api_bases or {})
+        self.authentication = authentication or ProviderAuthentication(
+            api_keys=self.api_keys, api_bases=self.api_bases
+        )
 
     def create(self, configuration: ModelConfiguration) -> LiteLLMChatModel:
         record = self.catalogue.find(configuration.identifier)
@@ -154,16 +193,19 @@ class LiteLLMProvider:
         if provider is None:
             raise ValueError(f"provider {configuration.provider!r} is not in the supplied catalogue")
         prefix = _SDK_PREFIXES.get(provider.npm, "openai")
-        key = self.api_keys.get(provider.identifier, "")
-        return LiteLLMChatModel(
+        model = LiteLLMChatModel(
             model=f"{prefix}/{record.model}",
-            api_key=SecretStr(key) if key else None,
+            api_key=None,
             api_base=self.api_bases.get(provider.identifier) or provider.api_base or None,
             temperature=configuration.temperature,
             timeout=configuration.timeout_seconds,
             reasoning_effort=configuration.reasoning_effort,
             context_length=configuration.context_length or record.context_length,
+            provider_identifier=provider.identifier,
+            provider_environment_variables=provider.environment_variables,
         )
+        model._authentication = self.authentication
+        return model
 
     def scope(self) -> Any:
         from contextlib import nullcontext
@@ -176,9 +218,15 @@ def provider_registry(
     *,
     api_keys: Mapping[str, str] | None = None,
     api_bases: Mapping[str, str] | None = None,
+    authentication: ProviderAuthentication | None = None,
 ) -> ProviderRegistry:
     """Return a registry with every catalogue provider routed through LiteLLM."""
-    implementation = LiteLLMProvider(catalogue, api_keys=api_keys, api_bases=api_bases)
+    implementation = LiteLLMProvider(
+        catalogue,
+        api_keys=api_keys,
+        api_bases=api_bases,
+        authentication=authentication,
+    )
     registry = ProviderRegistry(catalogue)
     for provider in catalogue.providers():
         registry.register(
