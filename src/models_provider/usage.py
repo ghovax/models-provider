@@ -25,6 +25,10 @@ def _decimal(value: Any) -> float:
         return 0.0
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 @dataclass(frozen=True, slots=True)
 class ModelUsage:
     """Normalized usage for one model response, regardless of provider wire format."""
@@ -53,19 +57,20 @@ class ModelUsage:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "ModelUsage":
-        value = value or {}
+        value = _mapping(value)
         input_tokens = _integer(value.get("input_tokens", value.get("prompt_tokens")))
         output_tokens = _integer(value.get("output_tokens", value.get("completion_tokens")))
         total_tokens = _integer(value.get("total_tokens")) or input_tokens + output_tokens
-        output_details = value.get("output_token_details") or value.get("completion_tokens_details") or {}
-        input_details = value.get("input_token_details") or value.get("prompt_tokens_details") or {}
+        output_details = _mapping(value.get("output_token_details") or value.get("completion_tokens_details"))
+        input_details = _mapping(value.get("input_token_details") or value.get("prompt_tokens_details"))
+        reasoning_details = _mapping(value.get("reasoning_tokens_details"))
         return cls(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
-            reasoning_tokens=_integer(value.get("reasoning_tokens", output_details.get("reasoning_tokens"))),
-            cache_read_tokens=_integer(value.get("cache_read_tokens", value.get("cached_tokens", input_details.get("cache_read", input_details.get("cached_tokens"))))),
-            cache_write_tokens=_integer(value.get("cache_write_tokens", input_details.get("cache_creation", input_details.get("cache_write_tokens")))),
+            reasoning_tokens=_integer(value.get("reasoning_tokens") or output_details.get("reasoning_tokens") or reasoning_details.get("reasoning_tokens") or reasoning_details.get("reasoning")),
+            cache_read_tokens=_integer(value.get("cache_read_tokens") or value.get("cached_tokens") or input_details.get("cache_read") or input_details.get("cached_tokens")),
+            cache_write_tokens=_integer(value.get("cache_write_tokens") or input_details.get("cache_creation") or input_details.get("cache_write_tokens")),
             input_audio_tokens=_integer(value.get("input_audio_tokens")),
             output_audio_tokens=_integer(value.get("output_audio_tokens")),
             cost_usd=_decimal(value.get("cost_usd", value.get("cost"))),

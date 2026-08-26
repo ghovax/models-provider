@@ -65,17 +65,18 @@ For applications that need a different transport or an OAuth-specific model,
 
 ```python
 from models_provider import ModelConfiguration, ModelRecord, ProviderRegistry
-from langchain_core.language_models import BaseChatModel
+from models_provider import LiteLLMChatModel
 
 registry = ProviderRegistry(catalogue)
 
 def build_local_openai_compatible_model(
     configuration: ModelConfiguration, record: ModelRecord | None
-) -> BaseChatModel:
-    # Replace this factory with the application's local endpoint client.
-    return LocalOpenAICompatibleModel(
-        model=configuration.model,
+):
+    return LiteLLMChatModel(
+        model=f"openai/{configuration.model}",
         api_base="http://127.0.0.1:11434/v1",
+        temperature=configuration.temperature,
+        timeout=configuration.timeout_seconds,
         context_length=record.context_length if record else 0,
     )
 
