@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -190,37 +189,6 @@ class ModelCatalogue:
         return len(self._models)
 
 
-@dataclass(frozen=True, slots=True)
-class ModelConfiguration:
-    """The model choice and request defaults an application gives a provider."""
-
-    provider: str
-    model: str
-    reasoning_effort: str | None = "high"
-    temperature: float = 0.0
-    timeout_seconds: float | None = 300.0
-    context_length: int = 0
-    extra: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        provider = self.provider.strip().lower()
-        model = self.model.strip()
-        if not provider or not model:
-            raise ValueError("provider and model cannot be empty")
-        if self.temperature < 0:
-            raise ValueError("temperature cannot be negative")
-        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive when set")
-        if self.context_length < 0:
-            raise ValueError("context_length cannot be negative")
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "model", model)
-
-    @property
-    def identifier(self) -> str:
-        return f"{self.provider}/{self.model}"
-
-
 @runtime_checkable
 class ModelProvider(Protocol):
     """Creates chat models from provider-qualified identifiers."""
@@ -235,36 +203,3 @@ class ModelProvider(Protocol):
     ) -> BaseChatModel:
         """Create a chat model; credentials remain owned by the provider instance."""
         ...
-
-
-ProviderFactory = Callable[[ModelConfiguration, ModelRecord | None], BaseChatModel]
-
-
-class ProviderRegistry:
-    """Dispatches model configurations to concrete provider implementations."""
-
-    def __init__(self, catalogue: ModelCatalogue | None = None) -> None:
-        self.catalogue = catalogue or ModelCatalogue()
-        self._factories: dict[str, ProviderFactory] = {}
-
-    def register(self, provider: str, factory: ProviderFactory) -> None:
-        name = provider.strip().lower()
-        if not name:
-            raise ValueError("provider cannot be empty")
-        self._factories[name] = factory
-
-    def create(self, configuration: ModelConfiguration) -> BaseChatModel:
-        try:
-            factory = self._factories[configuration.provider]
-        except KeyError as error:
-            available = ", ".join(sorted(self._factories)) or "none"
-            raise ValueError(
-                f"no model implementation registered for {configuration.provider!r}; available: {available}"
-            ) from error
-        return factory(configuration, self.catalogue.find(configuration.identifier))
-
-    def scope(self) -> Any:
-        return nullcontext()
-
-    def providers(self) -> tuple[str, ...]:
-        return tuple(sorted(self._factories))

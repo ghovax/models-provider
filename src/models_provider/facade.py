@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -11,8 +12,29 @@ from .auth import (
     OAuthAuthorization,
     ProviderAuthentication,
 )
-from .catalogue import MODELS_DEV_API_URL, _fetch_catalogue
 from .core import ModelCatalogue, ModelRecord
+
+
+_MODELS_DEV_URL = "https://models.dev/api.json"
+
+
+def _fetch_models(*, url: str, timeout_seconds: float, client: Any | None) -> ModelCatalogue:
+    if timeout_seconds <= 0:
+        raise ValueError("catalogue_timeout_seconds must be positive")
+    import httpx
+
+    client_was_created = client is None
+    http_client = client or httpx.Client(timeout=timeout_seconds)
+    try:
+        response = http_client.get(url)
+        response.raise_for_status()
+        payload: Any = response.json()
+    finally:
+        if client_was_created:
+            http_client.close()
+    if not isinstance(payload, Mapping):
+        raise ValueError("models.dev returned a non-object catalogue")
+    return ModelCatalogue.from_payload(payload)
 
 
 class Models:
@@ -23,7 +45,7 @@ class Models:
         *,
         credentials: CredentialStore | None = None,
         catalogue: ModelCatalogue | None = None,
-        catalogue_url: str = MODELS_DEV_API_URL,
+        catalogue_url: str = _MODELS_DEV_URL,
         catalogue_timeout_seconds: float = 10.0,
         catalogue_client: Any | None = None,
     ) -> None:
@@ -33,11 +55,10 @@ class Models:
         self._catalogue_timeout_seconds = catalogue_timeout_seconds
         self._catalogue_client = catalogue_client
         self._authentication: ProviderAuthentication | None = None
-        self._provider: Any | None = None
 
     def _catalogue_snapshot(self) -> ModelCatalogue:
         if self._catalogue is None:
-            self._catalogue = _fetch_catalogue(
+            self._catalogue = _fetch_models(
                 url=self._catalogue_url,
                 timeout_seconds=self._catalogue_timeout_seconds,
                 client=self._catalogue_client,
@@ -51,16 +72,6 @@ class Models:
                 store=self._credentials,
             )
         return self._authentication
-
-    def _model_provider(self) -> Any:
-        if self._provider is None:
-            from .litellm import LiteLLMProvider
-
-            self._provider = LiteLLMProvider(
-                self._catalogue_snapshot(),
-                authentication=self._authentication_service(),
-            )
-        return self._provider
 
     def list(self, provider: str | None = None) -> tuple[ModelRecord, ...]:
         """Return the available catalogue records, optionally filtered by provider."""
@@ -79,12 +90,28 @@ class Models:
         timeout_seconds: float | None = 300.0,
     ) -> BaseChatModel:
         """Create a ready-to-use chat model from ``provider/model``."""
-        return self._model_provider().chat(
-            model_identifier,
+        catalogue = self._catalogue_snapshot()
+        if "/" not in model_identifier:
+            raise ValueError("model_identifier must have the form 'provider/model'")
+        provider_identifier, _model_suffix = model_identifier.split("/", 1)
+        record = catalogue.find(model_identifier)
+        provider = catalogue.provider(provider_identifier)
+        if record is None or provider is None:
+            raise ValueError(f"model {model_identifier!r} is not in the models.dev catalogue")
+        from .litellm import LiteLLMChatModel, _SDK_PREFIXES
+
+        model = LiteLLMChatModel(
+            model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
+            api_base=provider.api_base or None,
             temperature=temperature,
+            timeout=timeout_seconds,
             reasoning_effort=reasoning_effort,
-            timeout_seconds=timeout_seconds,
+            context_length=record.context_length,
+            provider_identifier=provider.identifier,
+            provider_environment_variables=provider.environment_variables,
         )
+        model._authentication = self._authentication_service()
+        return model
 
     async def sign_in(self, provider: str) -> OAuthAuthorization:
         """Prepare OAuth and return its URL; the host decides whether to display it."""

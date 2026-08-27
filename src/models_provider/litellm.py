@@ -14,7 +14,6 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
 from .auth import ProviderAuthentication
-from .core import ModelCatalogue, ModelConfiguration, ProviderRegistry
 from .usage import ModelUsage
 
 
@@ -174,99 +173,4 @@ class LiteLLMChatModel(BaseChatModel):
         return self._response(response)
 
 
-class LiteLLMProvider:
-    """Concrete models.dev-to-LiteLLM implementation for common hosted providers."""
-
-    def __init__(
-        self,
-        catalogue: ModelCatalogue,
-        *,
-        api_keys: Mapping[str, str] | None = None,
-        api_bases: Mapping[str, str] | None = None,
-        authentication: ProviderAuthentication | None = None,
-    ) -> None:
-        self.catalogue = catalogue
-        self.api_keys = dict(api_keys or {})
-        self.api_bases = dict(api_bases or {})
-        self.authentication = authentication or ProviderAuthentication(
-            catalogue=catalogue, api_keys=self.api_keys, api_bases=self.api_bases
-        )
-
-    def create(self, configuration: ModelConfiguration) -> LiteLLMChatModel:
-        record = self.catalogue.find(configuration.identifier)
-        provider = self.catalogue.provider(configuration.provider)
-        if record is None:
-            raise ValueError(f"model {configuration.identifier!r} is not in the supplied catalogue")
-        if provider is None:
-            raise ValueError(
-                f"provider {configuration.provider!r} is not in the supplied catalogue"
-            )
-        prefix = _SDK_PREFIXES.get(provider.npm, "openai")
-        model = LiteLLMChatModel(
-            model=f"{prefix}/{record.model}",
-            api_key=None,
-            api_base=self.api_bases.get(provider.identifier) or provider.api_base or None,
-            temperature=configuration.temperature,
-            timeout=configuration.timeout_seconds,
-            reasoning_effort=configuration.reasoning_effort,
-            context_length=configuration.context_length or record.context_length,
-            provider_identifier=provider.identifier,
-            provider_environment_variables=provider.environment_variables,
-        )
-        model._authentication = self.authentication
-        return model
-
-    def chat(
-        self,
-        model_identifier: str,
-        *,
-        temperature: float = 0.0,
-        reasoning_effort: str | None = "high",
-        timeout_seconds: float | None = 300.0,
-    ) -> LiteLLMChatModel:
-        """Create a chat model from the concise public model identifier."""
-        if "/" not in model_identifier:
-            raise ValueError("model_identifier must have the form 'provider/model'")
-        provider, model = model_identifier.split("/", 1)
-        return self.create(
-            ModelConfiguration(
-                provider=provider,
-                model=model,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                timeout_seconds=timeout_seconds,
-            )
-        )
-
-    def scope(self) -> Any:
-        from contextlib import nullcontext
-
-        return nullcontext()
-
-
-def provider_registry(
-    catalogue: ModelCatalogue,
-    *,
-    api_keys: Mapping[str, str] | None = None,
-    api_bases: Mapping[str, str] | None = None,
-    authentication: ProviderAuthentication | None = None,
-) -> ProviderRegistry:
-    """Return a registry with every catalogue provider routed through LiteLLM."""
-    implementation = LiteLLMProvider(
-        catalogue,
-        api_keys=api_keys,
-        api_bases=api_bases,
-        authentication=authentication,
-    )
-    registry = ProviderRegistry(catalogue)
-    for provider in catalogue.providers():
-        registry.register(
-            provider.identifier,
-            lambda configuration, _record, implementation=implementation: implementation.create(
-                configuration
-            ),
-        )
-    return registry
-
-
-__all__ = ["LiteLLMChatModel", "LiteLLMProvider", "provider_registry"]
+__all__ = ["LiteLLMChatModel"]
