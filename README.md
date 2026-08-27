@@ -2,7 +2,7 @@
 
 Models Provider gives applications one independent interface for discovering models,
 resolving credentials, creating chat models, and collecting usage. It has no dependency
-on LangMesh or Teacher.
+on any application library.
 
 ## Public flow
 
@@ -39,9 +39,11 @@ OAuth tokens are stored and refreshed through the same credential store.
 ```python
 from models_provider import ApiKeyCredential, CredentialStore, Models
 
-credentials = CredentialStore.from_mapping({
-    "openai": ApiKeyCredential("application-api-key"),
-})
+credentials = CredentialStore.from_mapping(
+    {
+        "openai": ApiKeyCredential("sk-proj-...7Qx2"),
+    }
+)
 
 models = Models(credentials=credentials)
 model = models.chat("openai/gpt-4.1-mini")
@@ -120,10 +122,14 @@ remain inside Models Provider.
 
 ## Ownership
 
-| Responsibility                          | Owner                 |
-| --------------------------------------- | --------------------- |
-| Model catalogue                         | Models Provider       |
-| API keys, OAuth, and cloud credentials  | Models Provider       |
-| Provider-specific clients               | Models Provider       |
-| Sessions, tools, permissions, and files | Embedding application |
-| Lesson generation                       | Teacher               |
+Models Provider owns:
+
+- the models.dev catalogue;
+- API keys, OAuth credentials, and cloud credentials;
+- provider-specific clients;
+- authentication headers, refresh behavior, and usage normalization.
+
+The embedding application owns:
+
+- sessions, tools, permissions, and files;
+- application workflows and domain behavior.
