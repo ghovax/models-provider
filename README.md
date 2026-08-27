@@ -32,7 +32,8 @@ models.find("openai/gpt-4.1-mini")
 
 `Models()` never reads process environment variables. Call `Models.from_environment()`
 when that is the intended credential source; it captures the environment explicitly at
-construction time. An explicit credential store takes precedence over that snapshot.
+construction time. The library does not parse `.env` files; the host must load them
+before this call. An explicit credential store takes precedence over that snapshot.
 OAuth tokens are stored and refreshed through the same credential store.
 
 ```python
