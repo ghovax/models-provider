@@ -20,6 +20,7 @@ import time
 import urllib.parse
 import uuid
 from collections.abc import Mapping
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -39,8 +40,9 @@ __all__ = [
     "CursorTokens",
     "DeviceLoginFlow",
     "LoginFlow",
-    "MemoryCredentialStore",
+    "InMemoryCredentialStore",
     "OAuthAdapter",
+    "OAuthAuthorization",
     "OAuthConfiguration",
     "OAuthLoginFlow",
     "OAuthProvider",
@@ -64,22 +66,37 @@ class AuthenticationError(RuntimeError):
     """Raised when a provider cannot authenticate a request or complete sign-in."""
 
 
-@runtime_checkable
-class CredentialStore(Protocol):
-    """Storage supplied by the embedding application for provider credentials."""
+class CredentialStore(ABC):
+    """Abstract storage contract supplied by the embedding application."""
 
-    def load(self, provider_identifier: str) -> Any: ...
+    @classmethod
+    def from_mapping(cls, credentials: Mapping[str, Any]) -> "InMemoryCredentialStore":
+        """Build an in-memory store from provider credentials."""
+        return InMemoryCredentialStore(credentials)
 
-    def save(self, provider_identifier: str, credentials: Any) -> None: ...
+    @abstractmethod
+    def load(self, provider_identifier: str) -> Any:
+        """Load credentials for one provider, or return ``None``."""
+        raise NotImplementedError
 
-    def clear(self, provider_identifier: str) -> None: ...
+    @abstractmethod
+    def save(self, provider_identifier: str, credentials: Any) -> None:
+        """Persist credentials for one provider."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def clear(self, provider_identifier: str) -> None:
+        """Remove credentials for one provider."""
+        raise NotImplementedError
 
 
-class MemoryCredentialStore:
-    """Small storage implementation for applications, workers, and isolated mock runs."""
+class InMemoryCredentialStore(CredentialStore):
+    """Small concrete store for embedded applications and isolated mock runs."""
 
-    def __init__(self) -> None:
+    def __init__(self, credentials: Mapping[str, Any] | None = None) -> None:
         self._credentials: dict[str, Any] = {}
+        for provider_identifier, credential in (credentials or {}).items():
+            self.save(provider_identifier, credential)
 
     def load(self, provider_identifier: str) -> Any:
         value = self._credentials.get(provider_identifier)
@@ -108,7 +125,7 @@ class EnvironmentCredential:
     values: Mapping[str, str]
 
 
-_default_store = MemoryCredentialStore()
+_default_store = InMemoryCredentialStore()
 _store_context: contextvars.ContextVar[CredentialStore] = contextvars.ContextVar(
     "models_provider_credential_store", default=_default_store
 )
@@ -669,6 +686,26 @@ class LoginFlow(Protocol):
     async def wait(self, timeout: float = 300.0) -> OAuthTokens: ...  # noqa: ASYNC109
 
     async def close(self) -> None: ...
+
+
+class OAuthAuthorization:
+    """Host-facing OAuth authorization with a URL and explicit completion."""
+
+    def __init__(self, flow: LoginFlow) -> None:
+        self._flow = flow
+
+    @property
+    def url(self) -> str:
+        """Authorization URL for the host to display or open."""
+        return self._flow.authorize_url
+
+    async def complete(self, timeout: float = 300.0) -> OAuthTokens:  # noqa: ASYNC109
+        """Wait for the user-controlled authorization and persist its token."""
+        return await self._flow.wait(timeout)
+
+    async def close(self) -> None:
+        """Stop the callback listener without completing authorization."""
+        await self._flow.close()
 
 
 @runtime_checkable
