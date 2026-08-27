@@ -16,9 +16,10 @@ model = models.chat("openai/gpt-4.1-mini")
 
 `Models()` does not inspect process environment variables. Use
 `Models.from_environment()` to explicitly capture them, or provide an injected
-`CredentialStore`. If both are provided, the credential store wins.
-OAuth authorization returns a URL-bearing handle; the host decides whether to display or
-open the URL and then calls `complete()`.
+`CredentialStore`. The library does not parse `.env` files; the host loads them before
+calling `Models.from_environment()`. If both sources are provided, the credential store
+wins. OAuth authorization returns a URL-bearing handle; the host decides whether to
+display or open the URL and then calls `complete()`.
 
 Keep Models Provider independent from application runtimes. Working directories, session
 identities, tools, checkpoints, and lesson inputs do not belong in this package.
