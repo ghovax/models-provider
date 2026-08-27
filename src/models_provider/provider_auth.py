@@ -209,6 +209,14 @@ class ProviderAuthentication:
                 f"{provider_identifier!r} has no registered OAuth flow."
             ) from error
 
+    def redirect_uri(self, provider_identifier: str) -> str:
+        """Return the redirect URI registered for a provider's OAuth client."""
+        provider = provider_identifier.strip().lower()
+        adapter = self._oauth_adapters.get(provider)
+        if adapter is None:
+            raise AuthenticationError(f"{provider_identifier!r} has no registered OAuth flow.")
+        return adapter.redirect_uri()
+
     def authorization_request(
         self,
         provider_identifier: str,

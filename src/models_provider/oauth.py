@@ -131,6 +131,8 @@ class OAuthProvider(Protocol):
 
     def flow(self, store: CredentialStore) -> LoginFlow: ...
 
+    def redirect_uri(self) -> str: ...
+
     def authorization_request(
         self,
         redirect_uri: str,
@@ -573,6 +575,10 @@ class OAuthAdapter:
             store,
             token_parser=self._token_parser,
         )
+
+    def redirect_uri(self) -> str:
+        """Return the redirect URI registered for this provider's OAuth client."""
+        return self.configuration.redirect_uri
 
     def authorization_request(
         self,

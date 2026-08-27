@@ -75,7 +75,7 @@ model = models.chat("chatgpt/gpt-5")
 The library prepares the callback listener and returns the URL. It does not open a
 browser or make a user-interface decision.
 
-Hosts with a public callback can use the provider-neutral authorization request. The host
+Hosts can ask the provider for the redirect URI registered for its OAuth client. The host
 must keep its `state` and `code_verifier` until the callback, validate the returned state,
 and then exchange the one-time code:
 
@@ -83,15 +83,21 @@ and then exchange the one-time code:
 from models_provider import ProviderAuthentication
 
 authentication = ProviderAuthentication()
+redirect_uri = authentication.redirect_uri("chatgpt")
 authorization = authentication.authorization_request(
     "chatgpt",
-    "https://agent.example.com/github/auth/chatgpt/callback",
+    redirect_uri,
 )
 print(authorization.authorize_url)
 
 # In the callback handler, after checking that the state matches:
 tokens = await authorization.exchange(code)
 ```
+
+For ChatGPT, `redirect_uri` is the registered loopback URI
+`http://localhost:1455/auth/callback`. A host without a local listener can display the
+URL, let the browser return to localhost, and receive the copied one-time code through its
+own completion endpoint. Other providers may return a registered HTTPS callback instead.
 
 The host persists credentials through `authentication.serialize_token(provider, tokens)`
 and restores them through `authentication.deserialize_token(provider, payload)`. Providers
