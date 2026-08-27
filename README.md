@@ -75,15 +75,17 @@ model = models.chat("chatgpt/gpt-5")
 The library prepares the callback listener and returns the URL. It does not open a
 browser or make a user-interface decision.
 
-Hosts with a public callback can use the provider-owned PKCE request directly. The host
+Hosts with a public callback can use the provider-neutral authorization request. The host
 must keep its `state` and `code_verifier` until the callback, validate the returned state,
 and then exchange the one-time code:
 
 ```python
-from models_provider import ChatGPTAuthorizationRequest
+from models_provider import ProviderAuthentication
 
-authorization = ChatGPTAuthorizationRequest(
-    "https://agent.example.com/github/auth/chatgpt/callback"
+authentication = ProviderAuthentication()
+authorization = authentication.authorization_request(
+    "chatgpt",
+    "https://agent.example.com/github/auth/chatgpt/callback",
 )
 print(authorization.authorize_url)
 
@@ -91,8 +93,9 @@ print(authorization.authorize_url)
 tokens = await authorization.exchange(code)
 ```
 
-The returned `ChatGPTTokens` can be persisted with `chatgpt_tokens_to_mapping()` and
-restored with `chatgpt_tokens_from_mapping()` by the host's encrypted credential store.
+The host persists credentials through `authentication.serialize_token(provider, tokens)`
+and restores them through `authentication.deserialize_token(provider, payload)`. Providers
+own their token shape, refresh behavior, and request headers.
 
 ## Model contract
 

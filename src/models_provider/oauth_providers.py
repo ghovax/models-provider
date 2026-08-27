@@ -9,7 +9,6 @@ import hashlib
 import html
 import json
 import os
-import secrets
 import time
 import urllib.parse
 import uuid
@@ -22,7 +21,15 @@ import httpx
 
 from .credentials import CredentialStore, current_credential_store
 from .errors import AuthenticationError
-from .oauth import LoginFlow, OAuthProvider, OAuthTokens, _pkce_verifier
+from .oauth import (
+    HostedAuthorization,
+    LoginFlow,
+    OAuthAuthorizationRequest,
+    OAuthConfiguration,
+    OAuthProvider,
+    OAuthTokens,
+    _pkce_verifier,
+)
 
 
 CHATGPT_AUTHORIZATION_URL = "https://auth.openai.com/oauth/authorize"
@@ -30,6 +37,13 @@ CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CHATGPT_SCOPES = ("openid", "profile", "email", "offline_access")
 CHATGPT_LOOPBACK_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CHATGPT_OAUTH_CONFIGURATION = OAuthConfiguration(
+    authorization_url=CHATGPT_AUTHORIZATION_URL,
+    token_url=CHATGPT_TOKEN_URL,
+    client_id=CHATGPT_CLIENT_ID,
+    scopes=CHATGPT_SCOPES,
+    redirect_uri=CHATGPT_LOOPBACK_REDIRECT_URI,
+)
 
 
 def _b64url_decode(value: str) -> bytes:
@@ -179,6 +193,35 @@ def chatgpt_tokens_from_mapping(payload: Mapping[str, Any]) -> ChatGPTTokens:
     )
 
 
+def cursor_tokens_to_mapping(tokens: CursorTokens) -> dict[str, Any]:
+    """Return the provider-owned persisted representation of a Cursor session."""
+    return {
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "account": tokens.account,
+        "expires_at": tokens.expires_at,
+    }
+
+
+def cursor_tokens_from_mapping(payload: Mapping[str, Any]) -> CursorTokens:
+    """Rebuild a Cursor session from a previously persisted provider representation."""
+    if not isinstance(payload, Mapping):
+        raise AuthenticationError("Stored Cursor credentials are invalid.")
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise AuthenticationError("Stored Cursor credentials contain no access token.")
+    try:
+        expires_at = float(payload.get("expires_at") or 0.0)
+    except (TypeError, ValueError) as error:
+        raise AuthenticationError("Stored Cursor credentials have an invalid expiry.") from error
+    return CursorTokens(
+        access_token=access_token,
+        refresh_token=str(payload.get("refresh_token") or ""),
+        account=str(payload.get("account") or ""),
+        expires_at=expires_at,
+    )
+
+
 def chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTTokens | None:
     value = (store or current_credential_store()).load("chatgpt")
     return value if isinstance(value, ChatGPTTokens) else None
@@ -249,91 +292,16 @@ async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTok
         return refreshed
 
 
-class ChatGPTAuthorizationRequest:
-    """A provider-owned ChatGPT PKCE request for browser hosts with their own callback."""
-
-    def __init__(
-        self,
-        redirect_uri: str,
-        *,
-        client_id: str = CHATGPT_CLIENT_ID,
-        state: str | None = None,
-        code_verifier: str | None = None,
-    ) -> None:
-        parsed = urllib.parse.urlparse(redirect_uri)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("ChatGPT redirect_uri must be an absolute HTTP(S) URL")
-        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
-            raise ValueError("ChatGPT redirect_uri must use HTTPS outside localhost")
-        if not client_id.strip():
-            raise ValueError("ChatGPT client_id cannot be empty")
-        self.redirect_uri = redirect_uri
-        self.client_id = client_id.strip()
-        self._state = state or secrets.token_urlsafe(24)
-        self._code_verifier = code_verifier or _pkce_verifier()
-
-    @property
-    def state(self) -> str:
-        """Opaque state that the host must validate on the callback."""
-        return self._state
-
-    @property
-    def code_verifier(self) -> str:
-        """PKCE verifier that the host must retain until the callback is exchanged."""
-        return self._code_verifier
-
-    @property
-    def authorize_url(self) -> str:
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(self._code_verifier.encode()).digest())
-            .rstrip(b"=")
-            .decode()
-        )
-        return (
-            CHATGPT_AUTHORIZATION_URL
-            + "?"
-            + urllib.parse.urlencode(
-                {
-                    "response_type": "code",
-                    "client_id": self.client_id,
-                    "redirect_uri": self.redirect_uri,
-                    "scope": " ".join(CHATGPT_SCOPES),
-                    "code_challenge": challenge,
-                    "code_challenge_method": "S256",
-                    "state": self._state,
-                }
-            )
-        )
-
-    async def exchange(self, code: str) -> ChatGPTTokens:
-        """Exchange one validated callback code for provider credentials."""
-        if not code.strip():
-            raise AuthenticationError("ChatGPT authorization returned no code.")
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(
-                    CHATGPT_TOKEN_URL,
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": code,
-                        "redirect_uri": self.redirect_uri,
-                        "client_id": self.client_id,
-                        "code_verifier": self._code_verifier,
-                    },
-                )
-                response.raise_for_status()
-                tokens = _chatgpt_from_payload(response.json())
-        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
-            raise AuthenticationError(f"Could not complete ChatGPT sign-in: {error}") from error
-        return tokens
-
-
 class ChatGPTLoginFlow:
     """PKCE loopback login. The host opens ``authorize_url`` and owns the browser policy."""
 
     def __init__(self, store: CredentialStore | None = None) -> None:
         self._store = store or current_credential_store()
-        self._authorization = ChatGPTAuthorizationRequest(CHATGPT_LOOPBACK_REDIRECT_URI)
+        self._authorization = OAuthAuthorizationRequest(
+            "chatgpt",
+            CHATGPT_OAUTH_CONFIGURATION,
+            token_parser=_chatgpt_from_payload,
+        )
         self._server: HTTPServer | None = None
         self._captured: dict[str, str] = {}
 
@@ -446,6 +414,63 @@ class CursorLoginFlow:
         self._cancelled = True
 
 
+class CursorAuthorizationRequest:
+    """Host-owned Cursor authorization using Cursor's browser and polling flow."""
+
+    def __init__(
+        self,
+        _redirect_uri: str,
+        *,
+        state: str | None = None,
+        code_verifier: str | None = None,
+        **_: Any,
+    ) -> None:
+        self._state = state or str(uuid.uuid4())
+        self._code_verifier = code_verifier or _pkce_verifier()
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def code_verifier(self) -> str:
+        return self._code_verifier
+
+    @property
+    def authorize_url(self) -> str:
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(self._code_verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
+        return "https://cursor.com/loginDeepControl?" + urllib.parse.urlencode(
+            {
+                "challenge": challenge,
+                "uuid": self._state,
+                "mode": "login",
+                "redirectTarget": "cli",
+            }
+        )
+
+    async def exchange(self, _code: str = "") -> CursorTokens:
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.get(
+                        "https://api2.cursor.sh/auth/poll",
+                        params={"uuid": self._state, "verifier": self._code_verifier},
+                    )
+                if response.status_code == 404:
+                    await asyncio.sleep(1)
+                    continue
+                response.raise_for_status()
+                return _cursor_from_payload(response.json())
+            except httpx.HTTPError as error:
+                raise AuthenticationError(f"Cursor sign-in failed: {error}") from error
+        raise AuthenticationError("Cursor sign-in is still pending.")
+
+
 def request_chatgpt_headers(tokens: ChatGPTTokens, session_identifier: str = "") -> dict[str, str]:
     """Headers required by the ChatGPT subscription Responses endpoint."""
     return {
@@ -510,16 +535,43 @@ class _BuiltInOAuthAdapter:
         flow_factory: Callable[[CredentialStore], LoginFlow],
         valid_token: Callable[[CredentialStore], Any],
         header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]],
+        authorization_factory: Callable[..., HostedAuthorization],
+        token_serializer: Callable[[OAuthTokens], Mapping[str, Any]],
+        token_deserializer: Callable[[Mapping[str, Any]], OAuthTokens],
     ) -> None:
         self._flow_factory = flow_factory
         self._valid_token = valid_token
         self._header_builder = header_builder
+        self._authorization_factory = authorization_factory
+        self._token_serializer = token_serializer
+        self._token_deserializer = token_deserializer
 
     def flow(self, store: CredentialStore) -> LoginFlow:
         return self._flow_factory(store)
 
     async def valid_token(self, store: CredentialStore) -> OAuthTokens:
         return await self._valid_token(store)
+
+    def authorization_request(
+        self,
+        redirect_uri: str,
+        *,
+        client_id: str = "",
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> HostedAuthorization:
+        return self._authorization_factory(
+            redirect_uri,
+            client_id=client_id,
+            state=state,
+            code_verifier=code_verifier,
+        )
+
+    def serialize_tokens(self, tokens: OAuthTokens) -> Mapping[str, Any]:
+        return self._token_serializer(tokens)
+
+    def deserialize_tokens(self, payload: Mapping[str, Any]) -> OAuthTokens:
+        return self._token_deserializer(payload)
 
     def request_headers(
         self, token: OAuthTokens, request_identifier: str, session_identifier: str
@@ -533,6 +585,15 @@ def _default_oauth_adapters() -> dict[str, OAuthProvider]:
             ChatGPTLoginFlow,
             valid_chatgpt_tokens,
             lambda token, _request, session: request_chatgpt_headers(token, session),
+            lambda redirect_uri, **kwargs: OAuthAuthorizationRequest(
+                "chatgpt",
+                CHATGPT_OAUTH_CONFIGURATION,
+                token_parser=_chatgpt_from_payload,
+                redirect_uri=redirect_uri,
+                **kwargs,
+            ),
+            chatgpt_tokens_to_mapping,
+            chatgpt_tokens_from_mapping,
         ),
         "cursor": _BuiltInOAuthAdapter(
             CursorLoginFlow,
@@ -540,5 +601,8 @@ def _default_oauth_adapters() -> dict[str, OAuthProvider]:
             lambda token, request, _session: request_cursor_headers(
                 token, request or str(uuid.uuid4())
             ),
+            CursorAuthorizationRequest,
+            cursor_tokens_to_mapping,
+            cursor_tokens_from_mapping,
         ),
     }
