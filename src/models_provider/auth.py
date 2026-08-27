@@ -386,6 +386,7 @@ class ProviderAuthentication:
         provider_identifier: str,
         *,
         environment_variables: tuple[str, ...] = (),
+        store: CredentialStore | None = None,
     ) -> ApiKeyResolution:
         profile = self.profile(provider_identifier, environment_variables=environment_variables)
         provider = profile.identifier
@@ -398,7 +399,7 @@ class ProviderAuthentication:
         )
         source = "configured" if key else "none"
         if not key:
-            stored = self._store_for(None).load(credential_identifier)
+            stored = self._store_for(store).load(credential_identifier)
             if isinstance(stored, ApiKeyCredential):
                 key = stored.api_key.strip()
             elif isinstance(stored, EnvironmentCredential):
@@ -448,9 +449,12 @@ class ProviderAuthentication:
         provider_identifier: str,
         *,
         environment_variables: tuple[str, ...] = (),
+        store: CredentialStore | None = None,
     ) -> ApiKeyResolution:
         """Backward-compatible API-key-focused name for :meth:`resolve`."""
-        return self.resolve(provider_identifier, environment_variables=environment_variables)
+        return self.resolve(
+            provider_identifier, environment_variables=environment_variables, store=store
+        )
 
     def status(
         self,
@@ -464,7 +468,9 @@ class ProviderAuthentication:
         credentials = self._store_for(store).load(credential_identifier)
         if not isinstance(credentials, OAuthTokens):
             resolution = self.resolve(
-                profile.identifier, environment_variables=profile.environment_variables
+                profile.identifier,
+                environment_variables=profile.environment_variables,
+                store=store,
             )
             return AuthenticationStatus(
                 profile.identifier,
@@ -583,7 +589,9 @@ class ProviderAuthentication:
             token = await adapter.valid_token(store or self._store or current_credential_store())
             return dict(adapter.request_headers(token, request_identifier, session_identifier))
         profile = self.profile(provider)
-        resolution = self.resolve(provider, environment_variables=profile.environment_variables)
+        resolution = self.resolve(
+            provider, environment_variables=profile.environment_variables, store=store
+        )
         if not resolution.api_key:
             if resolution.method == "environment" and resolution.environment:
                 return dict(resolution.headers)
