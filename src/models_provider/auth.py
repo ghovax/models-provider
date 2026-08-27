@@ -31,6 +31,7 @@ __all__ = [
     "AuthenticationError",
     "AuthenticationStatus",
     "ApiKeyCredential",
+    "EnvironmentCredential",
     "ChatGPTLoginFlow",
     "ChatGPTTokens",
     "CredentialStore",
@@ -46,6 +47,7 @@ __all__ = [
     "OAuthTokens",
     "ProviderAuthentication",
     "ProviderAuthProfile",
+    "provider_auth_profile",
     "current_credential_store",
     "bind_credential_store",
     "reset_credential_store",
@@ -99,6 +101,13 @@ class ApiKeyCredential:
     api_key: str
 
 
+@dataclass(frozen=True, slots=True)
+class EnvironmentCredential:
+    """Named provider environment values held by an application's credential store."""
+
+    values: Mapping[str, str]
+
+
 _default_store = MemoryCredentialStore()
 _store_context: contextvars.ContextVar[CredentialStore] = contextvars.ContextVar(
     "models_provider_credential_store", default=_default_store
@@ -140,7 +149,18 @@ class ApiKeyResolution:
     api_key: str = ""
     api_base: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
+    environment: Mapping[str, str] = field(default_factory=dict)
+    method: str = "api_key"
     source: str = "none"
+
+    @property
+    def available(self) -> bool:
+        """Whether the resolved credentials can authorize or configure a provider call."""
+        return (
+            bool(self.api_key)
+            if self.method == "api_key"
+            else bool(self.api_key or self.environment)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +169,7 @@ class ProviderAuthProfile:
 
     identifier: str
     environment_variables: tuple[str, ...] = ()
+    credential_environment_variables: tuple[str, ...] = ()
     default_base_url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
     method: str = "api_key"
@@ -168,6 +189,7 @@ _AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
     "azure": ProviderAuthProfile(
         "azure",
         environment_variables=("AZURE_API_KEY",),
+        credential_environment_variables=("AZURE_RESOURCE_NAME",),
         api_key_header="api-key",
         api_key_prefix="",
     ),
@@ -189,6 +211,60 @@ _AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
         api_key_header="x-goog-api-key",
         api_key_prefix="",
     ),
+    "google-vertex": ProviderAuthProfile(
+        "google-vertex",
+        method="environment",
+        credential_environment_variables=(
+            "GOOGLE_VERTEX_PROJECT",
+            "GOOGLE_VERTEX_LOCATION",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        ),
+    ),
+    "google-vertex-anthropic": ProviderAuthProfile(
+        "google-vertex-anthropic",
+        method="environment",
+        credential_environment_variables=(
+            "GOOGLE_VERTEX_PROJECT",
+            "GOOGLE_VERTEX_LOCATION",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        ),
+    ),
+    "amazon-bedrock": ProviderAuthProfile(
+        "amazon-bedrock",
+        method="environment",
+        credential_environment_variables=(
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ),
+    ),
+    "bedrock": ProviderAuthProfile(
+        "bedrock",
+        method="environment",
+        credential_environment_variables=(
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ),
+    ),
+    "github-copilot": ProviderAuthProfile(
+        "github-copilot",
+        environment_variables=("GITHUB_TOKEN",),
+        default_base_url="https://api.githubcopilot.com",
+    ),
+    "azure-cognitive-services": ProviderAuthProfile(
+        "azure-cognitive-services",
+        environment_variables=("AZURE_COGNITIVE_SERVICES_API_KEY",),
+        credential_environment_variables=("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",),
+        api_key_header="api-key",
+        api_key_prefix="",
+    ),
     "opencode": ProviderAuthProfile(
         "opencode",
         environment_variables=("OPENCODE_API_KEY",),
@@ -205,6 +281,46 @@ _AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
         credential_identifier="opencode",
     ),
 }
+
+
+def provider_auth_profile(
+    provider_identifier: str,
+    *,
+    environment_variables: tuple[str, ...] = (),
+    credential_environment_variables: tuple[str, ...] = (),
+    default_base_url: str = "",
+    headers: Mapping[str, str] | None = None,
+    anonymous_api_key: str = "",
+    credential_identifier: str = "",
+) -> ProviderAuthProfile:
+    """Build the standard authentication profile for a provider identifier."""
+    provider = provider_identifier.strip().lower()
+    if not provider:
+        raise ValueError("provider identifier cannot be empty")
+    override = _AUTH_PROFILE_OVERRIDES.get(provider)
+    if override is None:
+        return ProviderAuthProfile(
+            identifier=provider,
+            environment_variables=environment_variables,
+            credential_environment_variables=credential_environment_variables,
+            default_base_url=default_base_url,
+            headers=dict(headers or {}),
+            anonymous_api_key=anonymous_api_key,
+            credential_identifier=credential_identifier,
+            method="environment" if credential_environment_variables else "api_key",
+        )
+    return replace(
+        override,
+        environment_variables=(
+            override.environment_variables
+            if override.method == "environment"
+            else override.environment_variables or environment_variables
+        ),
+        default_base_url=override.default_base_url or default_base_url,
+        headers=dict(headers or override.headers),
+        anonymous_api_key=override.anonymous_api_key or anonymous_api_key,
+        credential_identifier=override.credential_identifier or credential_identifier,
+    )
 
 
 class ProviderAuthentication:
@@ -245,28 +361,27 @@ class ProviderAuthentication:
                 if override is not None:
                     return replace(
                         override,
-                        environment_variables=override.environment_variables
-                        or record.environment_variables,
+                        environment_variables=(
+                            override.environment_variables
+                            if override.method == "environment"
+                            else override.environment_variables or record.environment_variables
+                        ),
                         default_base_url=override.default_base_url or record.api_base,
                     )
-                return ProviderAuthProfile(
-                    identifier=record.identifier,
+                return provider_auth_profile(
+                    record.identifier,
                     environment_variables=record.environment_variables,
                     default_base_url=record.api_base,
-                    method="oauth" if provider in self._oauth_adapters else "api_key",
                 )
-        override = _AUTH_PROFILE_OVERRIDES.get(provider)
-        if override is not None:
-            return override
-        method = "oauth" if provider in self._oauth_adapters else "api_key"
-        return ProviderAuthProfile(
-            provider, environment_variables=environment_variables, method=method
-        )
+        profile = provider_auth_profile(provider, environment_variables=environment_variables)
+        if provider in self._oauth_adapters and profile.method == "api_key":
+            return replace(profile, method="oauth")
+        return profile
 
     def _store_for(self, store: CredentialStore | None) -> CredentialStore:
         return store or self._store or current_credential_store()
 
-    def resolve_key(
+    def resolve(
         self,
         provider_identifier: str,
         *,
@@ -275,6 +390,7 @@ class ProviderAuthentication:
         profile = self.profile(provider_identifier, environment_variables=environment_variables)
         provider = profile.identifier
         credential_identifier = profile.credential_identifier or provider
+        environment: dict[str, str] = {}
         key = (
             self._api_keys.get(credential_identifier, "")
             or self._api_keys.get(provider, "")
@@ -285,6 +401,12 @@ class ProviderAuthentication:
             stored = self._store_for(None).load(credential_identifier)
             if isinstance(stored, ApiKeyCredential):
                 key = stored.api_key.strip()
+            elif isinstance(stored, EnvironmentCredential):
+                environment = {
+                    name: str(value).strip()
+                    for name, value in stored.values.items()
+                    if str(value).strip()
+                }
             elif isinstance(stored, OAuthTokens) and not stored.is_expired():
                 key = stored.access_token
                 source = "oauth"
@@ -292,6 +414,15 @@ class ProviderAuthentication:
                 key = stored.strip()
             if key:
                 source = source if source == "oauth" else "stored"
+            elif environment:
+                source = "stored"
+        if not environment:
+            for environment_name in profile.credential_environment_variables:
+                value = os.environ.get(environment_name, "").strip()
+                if value:
+                    environment[environment_name] = value
+            if environment and source == "none":
+                source = "environment"
         if not key:
             for environment_name in profile.environment_variables or environment_variables:
                 key = os.environ.get(environment_name, "").strip()
@@ -307,8 +438,19 @@ class ProviderAuthentication:
             api_key=key,
             api_base=base or profile.default_base_url,
             headers=dict(profile.headers),
+            environment=environment,
+            method=profile.method,
             source=source,
         )
+
+    def resolve_key(
+        self,
+        provider_identifier: str,
+        *,
+        environment_variables: tuple[str, ...] = (),
+    ) -> ApiKeyResolution:
+        """Backward-compatible API-key-focused name for :meth:`resolve`."""
+        return self.resolve(provider_identifier, environment_variables=environment_variables)
 
     def status(
         self,
@@ -321,13 +463,13 @@ class ProviderAuthentication:
         credential_identifier = profile.credential_identifier or profile.identifier
         credentials = self._store_for(store).load(credential_identifier)
         if not isinstance(credentials, OAuthTokens):
-            resolution = self.resolve_key(
+            resolution = self.resolve(
                 profile.identifier, environment_variables=profile.environment_variables
             )
             return AuthenticationStatus(
                 profile.identifier,
                 profile.method,
-                signed_in=bool(resolution.api_key) and resolution.source != "anonymous",
+                signed_in=resolution.available and resolution.source != "anonymous",
                 source=resolution.source,
             )
         return AuthenticationStatus(
@@ -441,8 +583,10 @@ class ProviderAuthentication:
             token = await adapter.valid_token(store or self._store or current_credential_store())
             return dict(adapter.request_headers(token, request_identifier, session_identifier))
         profile = self.profile(provider)
-        resolution = self.resolve_key(provider, environment_variables=profile.environment_variables)
+        resolution = self.resolve(provider, environment_variables=profile.environment_variables)
         if not resolution.api_key:
+            if resolution.method == "environment" and resolution.environment:
+                return dict(resolution.headers)
             raise AuthenticationError(f"No credentials are available for {provider_identifier!r}.")
         header_value = resolution.api_key
         if profile.api_key_prefix:

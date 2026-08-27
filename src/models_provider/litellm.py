@@ -85,7 +85,7 @@ class LiteLLMChatModel(BaseChatModel):
         params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
         resolved = None
         if self._authentication is not None and self.provider_identifier:
-            resolved = self._authentication.resolve_key(
+            resolved = self._authentication.resolve(
                 self.provider_identifier,
                 environment_variables=self.provider_environment_variables,
             )
