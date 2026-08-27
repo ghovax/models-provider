@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import os
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -42,17 +43,29 @@ class Models:
         self,
         *,
         credentials: CredentialStore | None = None,
+        environment: Mapping[str, str] | None = None,
         catalogue: ModelCatalogue | None = None,
         catalogue_url: str = _MODELS_DEV_URL,
         catalogue_timeout_seconds: float = 10.0,
         catalogue_client: Any | None = None,
     ) -> None:
         self._credentials = credentials
+        self._environment = dict(environment or {})
         self._catalogue = catalogue
         self._catalogue_url = catalogue_url
         self._catalogue_timeout_seconds = catalogue_timeout_seconds
         self._catalogue_client = catalogue_client
         self._authentication: ProviderAuthentication | None = None
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        environment: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> "Models":
+        """Build a model facade from an explicit snapshot of process variables."""
+        return cls(environment=dict(os.environ if environment is None else environment), **kwargs)
 
     def _catalogue_snapshot(self) -> ModelCatalogue:
         if self._catalogue is None:
@@ -68,6 +81,7 @@ class Models:
             self._authentication = ProviderAuthentication(
                 catalogue=self._catalogue_snapshot(),
                 store=self._credentials,
+                environment=self._environment,
             )
         return self._authentication
 
