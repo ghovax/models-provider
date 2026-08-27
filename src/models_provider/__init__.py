@@ -1,38 +1,44 @@
 """Independent models.dev catalogue and interchangeable model implementations."""
 
-from .auth import (
+from .credentials import (
     ApiKeyCredential,
-    ApiKeyResolution,
-    AuthenticationError,
-    AuthenticationStatus,
-    ChatGPTLoginFlow,
-    ChatGPTTokens,
     CredentialStore,
-    CursorLoginFlow,
-    CursorTokens,
-    DeviceLoginFlow,
     EnvironmentCredential,
-    LoginFlow,
     InMemoryCredentialStore,
+    bind_credential_store,
+    current_credential_store,
+    reset_credential_store,
+)
+from .errors import AuthenticationError
+from .oauth import (
+    DeviceLoginFlow,
+    LoginFlow,
     OAuthAdapter,
     OAuthAuthorization,
     OAuthConfiguration,
     OAuthLoginFlow,
     OAuthProvider,
     OAuthTokens,
-    ProviderAuthentication,
-    ProviderAuthProfile,
-    bind_credential_store,
-    current_credential_store,
-    reset_credential_store,
-    request_chatgpt_headers,
-    request_cursor_headers,
+)
+from .oauth_providers import (
+    ChatGPTLoginFlow,
+    ChatGPTTokens,
+    CursorLoginFlow,
+    CursorTokens,
     chatgpt_tokens,
     cursor_tokens,
+    request_chatgpt_headers,
+    request_cursor_headers,
     valid_chatgpt_tokens,
     valid_cursor_tokens,
+)
+from .profiles import (
+    ApiKeyResolution,
+    AuthenticationStatus,
+    ProviderAuthProfile,
     provider_auth_profile,
 )
+from .provider_auth import ProviderAuthentication
 from .subscriptions import (
     cached_chatgpt_models,
     cached_cursor_models,
