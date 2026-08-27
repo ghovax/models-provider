@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
+from .errors import AuthenticationError
 from .provider_auth import ProviderAuthentication
 from .usage import ModelUsage
 
@@ -33,6 +34,21 @@ _SDK_PREFIXES = {
     "@ai-sdk/togetherai": "together_ai",
     "@ai-sdk/xai": "xai",
     "@openrouter/ai-sdk-provider": "openrouter",
+}
+
+_LITELLM_ENVIRONMENT_PARAMETERS = {
+    "GOOGLE_VERTEX_PROJECT": "vertex_project",
+    "GOOGLE_VERTEX_LOCATION": "vertex_location",
+    "GOOGLE_APPLICATION_CREDENTIALS": "vertex_credentials",
+    "VERTEXAI_PROJECT": "vertex_project",
+    "VERTEXAI_LOCATION": "vertex_location",
+    "VERTEXAI_CREDENTIALS": "vertex_credentials",
+    "AWS_ACCESS_KEY_ID": "aws_access_key_id",
+    "AWS_SECRET_ACCESS_KEY": "aws_secret_access_key",
+    "AWS_SESSION_TOKEN": "aws_session_token",
+    "AWS_REGION": "aws_region_name",
+    "AWS_DEFAULT_REGION": "aws_region_name",
+    "AWS_BEARER_TOKEN_BEDROCK": "aws_bearer_token",
 }
 
 
@@ -88,10 +104,30 @@ class LiteLLMChatModel(BaseChatModel):
                 self.provider_identifier,
                 environment_variables=self.provider_environment_variables,
             )
-        if resolved is not None and resolved.api_key:
-            params["api_key"] = resolved.api_key
-        elif self.api_key is not None:
+        if resolved is not None:
+            if resolved.api_key:
+                params["api_key"] = resolved.api_key
+            elif resolved.method == "environment":
+                environment_parameters = {
+                    _LITELLM_ENVIRONMENT_PARAMETERS[name]: value
+                    for name, value in resolved.environment.items()
+                    if name in _LITELLM_ENVIRONMENT_PARAMETERS
+                }
+                if not environment_parameters:
+                    raise AuthenticationError(
+                        f"No credentials are available for {self.provider_identifier!r}."
+                    )
+                params.update(environment_parameters)
+            elif self.api_key is not None and self.api_key.get_secret_value():
+                params["api_key"] = self.api_key.get_secret_value()
+            else:
+                raise AuthenticationError(
+                    f"No credentials are available for {self.provider_identifier!r}."
+                )
+        elif self.api_key is not None and self.api_key.get_secret_value():
             params["api_key"] = self.api_key.get_secret_value()
+        else:
+            raise AuthenticationError("No explicit credentials are available for this model.")
         if resolved is not None and resolved.api_base:
             params["api_base"] = resolved.api_base
         elif self.api_base:
