@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
-from .auth import ProviderAuthentication
+from .provider_auth import ProviderAuthentication
 from .usage import ModelUsage
 
 
