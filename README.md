@@ -90,3 +90,70 @@ The factory receives the selected `ModelRecord | None`, allowing an implementati
 use models.dev capabilities without reimplementing parsing. Credentials and transport
 settings belong to the provider instance, never to the model identifier or to unrelated
 application workflows.
+
+## Authentication contract
+
+Models Provider owns provider credential resolution. An embedding application supplies
+only a credential store and optional in-memory overrides:
+
+```python
+import webbrowser
+
+from models_provider import (
+    MemoryCredentialStore,
+    ProviderAuthentication,
+    load_catalogue,
+)
+
+catalogue = load_catalogue()
+credential_store = MemoryCredentialStore()
+authentication = ProviderAuthentication(
+    catalogue=catalogue,
+    api_keys={"openai": "key-from-the-application"},
+    store=credential_store,
+)
+
+resolved = authentication.resolve_key("openai")
+# ApiKeyResolution(provider="openai", api_key="...", api_base="", source="configured")
+status = authentication.status("openai")
+# AuthenticationStatus(provider="openai", method="api_key", signed_in=True, source="configured")
+```
+
+Resolution checks explicit keys, stored `ApiKeyCredential` values, the provider's
+declared environment variables, and finally an anonymous provider key when one is
+declared. `save_api_key` and `sign_out` persist or remove credentials through the
+supplied store. The library never writes a secret file by itself.
+
+The package also provides a reusable OAuth contract for providers that publish standard
+authorization endpoints:
+
+```python
+from models_provider import OAuthConfiguration
+
+authentication.register_oauth(
+    "example-provider",
+    OAuthConfiguration(
+        authorization_url="https://login.example.com/authorize",
+        token_url="https://login.example.com/token",
+        client_id="registered-client-id",
+        scopes=("inference",),
+        redirect_uri="http://127.0.0.1:8765/callback",
+    ),
+)
+async def sign_in():
+    flow = authentication.flow("example-provider")
+    await flow.start()
+    webbrowser.open(flow.authorize_url)
+    return await flow.wait()
+```
+
+`OAuthLoginFlow` implements state validation, PKCE, callback handling, token exchange,
+and persistence. `DeviceLoginFlow` is selected when the configuration includes a device
+authorization endpoint. Refresh and authenticated request headers are handled by the
+same registered adapter. ChatGPT and Cursor use built-in adapters because their account
+sign-in protocols are provider-specific; other providers can register either the
+standard flow or a small custom adapter without importing LangMesh.
+
+Authentication status is intentionally safe to publish: it reports the provider, method,
+source, expiry, and display account only. Token and API-key values stay inside the
+credential store and request material.

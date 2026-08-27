@@ -2,6 +2,7 @@
 
 from .catalogue import MODELS_DEV_API_URL, load_catalogue
 from .auth import (
+    ApiKeyCredential,
     ApiKeyResolution,
     AuthenticationError,
     AuthenticationStatus,
@@ -10,7 +11,13 @@ from .auth import (
     CredentialStore,
     CursorLoginFlow,
     CursorTokens,
+    DeviceLoginFlow,
+    LoginFlow,
     MemoryCredentialStore,
+    OAuthAdapter,
+    OAuthConfiguration,
+    OAuthLoginFlow,
+    OAuthProvider,
     OAuthTokens,
     ProviderAuthentication,
     ProviderAuthProfile,
@@ -31,6 +38,7 @@ from .subscriptions import (
     clear_chatgpt_models_cache,
     clear_cursor_models_cache,
     clear_usage_snapshot,
+    display_cursor_account,
     fetch_chatgpt_models,
     fetch_cursor_models,
     get_usage_snapshot,
@@ -46,8 +54,10 @@ from .core import (
     ProviderRegistry,
 )
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
+
 __all__ = [
     "MODELS_DEV_API_URL",
+    "ApiKeyCredential",
     "ApiKeyResolution",
     "AuthenticationError",
     "AuthenticationStatus",
@@ -56,7 +66,13 @@ __all__ = [
     "CredentialStore",
     "CursorLoginFlow",
     "CursorTokens",
+    "DeviceLoginFlow",
+    "LoginFlow",
     "MemoryCredentialStore",
+    "OAuthAdapter",
+    "OAuthConfiguration",
+    "OAuthLoginFlow",
+    "OAuthProvider",
     "OAuthTokens",
     "ModelCatalogue",
     "ModelConfiguration",
@@ -86,6 +102,7 @@ __all__ = [
     "clear_chatgpt_models_cache",
     "clear_cursor_models_cache",
     "clear_usage_snapshot",
+    "display_cursor_account",
     "fetch_chatgpt_models",
     "fetch_cursor_models",
     "get_usage_snapshot",
