@@ -25,6 +25,13 @@ from .errors import AuthenticationError
 from .oauth import LoginFlow, OAuthProvider, OAuthTokens, _pkce_verifier
 
 
+CHATGPT_AUTHORIZATION_URL = "https://auth.openai.com/oauth/authorize"
+CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"
+CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CHATGPT_SCOPES = ("openid", "profile", "email", "offline_access")
+CHATGPT_LOOPBACK_REDIRECT_URI = "http://localhost:1455/auth/callback"
+
+
 def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
@@ -139,6 +146,39 @@ def _save(provider: str, credentials: OAuthTokens, store: CredentialStore | None
     (store or current_credential_store()).save(provider, credentials)
 
 
+def chatgpt_tokens_to_mapping(tokens: ChatGPTTokens) -> dict[str, Any]:
+    """Return the provider-owned persisted representation of a ChatGPT session."""
+    return {
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "id_token": tokens.id_token,
+        "account_id": tokens.account_id,
+        "email": tokens.email,
+        "expires_at": tokens.expires_at,
+    }
+
+
+def chatgpt_tokens_from_mapping(payload: Mapping[str, Any]) -> ChatGPTTokens:
+    """Rebuild a ChatGPT session from a previously persisted provider representation."""
+    if not isinstance(payload, Mapping):
+        raise AuthenticationError("Stored ChatGPT credentials are invalid.")
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise AuthenticationError("Stored ChatGPT credentials contain no access token.")
+    try:
+        expires_at = float(payload.get("expires_at") or 0.0)
+    except (TypeError, ValueError) as error:
+        raise AuthenticationError("Stored ChatGPT credentials have an invalid expiry.") from error
+    return ChatGPTTokens(
+        access_token=access_token,
+        refresh_token=str(payload.get("refresh_token") or ""),
+        id_token=str(payload.get("id_token") or ""),
+        account_id=str(payload.get("account_id") or ""),
+        email=str(payload.get("email") or ""),
+        expires_at=expires_at,
+    )
+
+
 def chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTTokens | None:
     value = (store or current_credential_store()).load("chatgpt")
     return value if isinstance(value, ChatGPTTokens) else None
@@ -165,12 +205,12 @@ async def valid_chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTT
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
-                    "https://auth.openai.com/oauth/token",
+                    CHATGPT_TOKEN_URL,
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": current.refresh_token,
-                        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-                        "scope": "openid profile email offline_access",
+                        "client_id": CHATGPT_CLIENT_ID,
+                        "scope": " ".join(CHATGPT_SCOPES),
                     },
                 )
                 response.raise_for_status()
@@ -209,33 +249,97 @@ async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTok
         return refreshed
 
 
+class ChatGPTAuthorizationRequest:
+    """A provider-owned ChatGPT PKCE request for browser hosts with their own callback."""
+
+    def __init__(
+        self,
+        redirect_uri: str,
+        *,
+        client_id: str = CHATGPT_CLIENT_ID,
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> None:
+        parsed = urllib.parse.urlparse(redirect_uri)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("ChatGPT redirect_uri must be an absolute HTTP(S) URL")
+        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
+            raise ValueError("ChatGPT redirect_uri must use HTTPS outside localhost")
+        if not client_id.strip():
+            raise ValueError("ChatGPT client_id cannot be empty")
+        self.redirect_uri = redirect_uri
+        self.client_id = client_id.strip()
+        self._state = state or secrets.token_urlsafe(24)
+        self._code_verifier = code_verifier or _pkce_verifier()
+
+    @property
+    def state(self) -> str:
+        """Opaque state that the host must validate on the callback."""
+        return self._state
+
+    @property
+    def code_verifier(self) -> str:
+        """PKCE verifier that the host must retain until the callback is exchanged."""
+        return self._code_verifier
+
+    @property
+    def authorize_url(self) -> str:
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(self._code_verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
+        return (
+            CHATGPT_AUTHORIZATION_URL
+            + "?"
+            + urllib.parse.urlencode(
+                {
+                    "response_type": "code",
+                    "client_id": self.client_id,
+                    "redirect_uri": self.redirect_uri,
+                    "scope": " ".join(CHATGPT_SCOPES),
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "state": self._state,
+                }
+            )
+        )
+
+    async def exchange(self, code: str) -> ChatGPTTokens:
+        """Exchange one validated callback code for provider credentials."""
+        if not code.strip():
+            raise AuthenticationError("ChatGPT authorization returned no code.")
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    CHATGPT_TOKEN_URL,
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": self.redirect_uri,
+                        "client_id": self.client_id,
+                        "code_verifier": self._code_verifier,
+                    },
+                )
+                response.raise_for_status()
+                tokens = _chatgpt_from_payload(response.json())
+        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
+            raise AuthenticationError(f"Could not complete ChatGPT sign-in: {error}") from error
+        return tokens
+
+
 class ChatGPTLoginFlow:
     """PKCE loopback login. The host opens ``authorize_url`` and owns the browser policy."""
 
     def __init__(self, store: CredentialStore | None = None) -> None:
         self._store = store or current_credential_store()
-        self._verifier = _pkce_verifier()
-        self._state = secrets.token_urlsafe(24)
+        self._authorization = ChatGPTAuthorizationRequest(CHATGPT_LOOPBACK_REDIRECT_URI)
         self._server: HTTPServer | None = None
         self._captured: dict[str, str] = {}
 
     @property
     def authorize_url(self) -> str:
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(self._verifier.encode()).digest())
-            .rstrip(b"=")
-            .decode()
-        )
-        parameters = {
-            "response_type": "code",
-            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-            "redirect_uri": "http://localhost:1455/auth/callback",
-            "scope": "openid profile email offline_access",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": self._state,
-        }
-        return "https://auth.openai.com/oauth/authorize?" + urllib.parse.urlencode(parameters)
+        return self._authorization.authorize_url
 
     async def start(self) -> None:
         flow = self
@@ -248,7 +352,7 @@ class ChatGPTLoginFlow:
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 if urllib.parse.urlparse(self.path).path != "/auth/callback":
                     flow._captured["error"] = "Invalid callback path."
-                elif query.get("state", [""])[0] != flow._state:
+                elif query.get("state", [""])[0] != flow._authorization.state:
                     flow._captured["error"] = "Authorization state mismatch."
                 elif query.get("code", [""])[0]:
                     flow._captured["code"] = query["code"][0]
@@ -274,19 +378,7 @@ class ChatGPTLoginFlow:
                 await asyncio.to_thread(self._server.handle_request)
             if "code" not in self._captured:
                 raise AuthenticationError(self._captured.get("error", "ChatGPT sign-in failed."))
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(
-                    "https://auth.openai.com/oauth/token",
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": self._captured["code"],
-                        "redirect_uri": "http://localhost:1455/auth/callback",
-                        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-                        "code_verifier": self._verifier,
-                    },
-                )
-                response.raise_for_status()
-                tokens = _chatgpt_from_payload(response.json())
+            tokens = await self._authorization.exchange(self._captured["code"])
             _save("chatgpt", tokens, self._store)
             return tokens
         except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
