@@ -5,17 +5,18 @@ description: Select and configure interchangeable chat-model providers through m
 
 # Model providers
 
-Ask for the provider, model, reasoning effort, working directory, and explicit
-credential source before building a model.
+Use `Models` for model discovery, authentication, and construction:
 
-Use `ModelConfiguration` for the model choice and `LangMeshProvider` when the
-application should use LangMesh's provider catalogue, API-key configuration, custom
-endpoints, or ChatGPT/Cursor credential stores. Keep credentials in the caller-owned
-store or explicit provider configuration; do not invent environment variables.
+```python
+from models_provider import Models
 
-Use `ProviderRegistry` when an application owns its model implementations. Register one
-factory per provider and pass the registry anywhere a `ModelProvider` is accepted.
+models = Models()
+model = models.chat("openai/gpt-4.1-mini")
+```
 
-Activate native credential state only for the call scope with `with provider.scope():`.
-Keep long-running runs detached and persist their outputs and checkpoints before the
-process exits.
+Credentials come from an injected `CredentialStore` or provider environment variables.
+OAuth authorization returns a URL-bearing handle; the host decides whether to display or
+open the URL and then calls `complete()`.
+
+Keep Models Provider independent from application runtimes. Working directories, session
+identities, tools, checkpoints, and lesson inputs do not belong in this package.
