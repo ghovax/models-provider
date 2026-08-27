@@ -7,12 +7,10 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from .auth import (
-    CredentialStore,
-    OAuthAuthorization,
-    ProviderAuthentication,
-)
+from .credentials import CredentialStore
 from .core import ModelCatalogue, ModelRecord
+from .oauth import OAuthAuthorization
+from .provider_auth import ProviderAuthentication
 
 
 _MODELS_DEV_URL = "https://models.dev/api.json"

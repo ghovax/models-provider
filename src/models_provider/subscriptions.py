@@ -13,10 +13,10 @@ from typing import Any
 
 import httpx
 
-from .auth import (
-    AuthenticationError,
+from .credentials import current_credential_store
+from .errors import AuthenticationError
+from .oauth_providers import (
     CursorTokens,
-    current_credential_store,
     request_chatgpt_headers,
     request_cursor_headers,
     valid_chatgpt_tokens,
