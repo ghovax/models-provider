@@ -15,6 +15,7 @@ from .credentials import (
 )
 from .errors import AuthenticationError
 from .oauth import (
+    HostedAuthorization,
     LoginFlow,
     OAuthAdapter,
     OAuthConfiguration,
@@ -208,6 +209,47 @@ class ProviderAuthentication:
                 f"{provider_identifier!r} has no registered OAuth flow."
             ) from error
 
+    def authorization_request(
+        self,
+        provider_identifier: str,
+        redirect_uri: str,
+        *,
+        client_id: str = "",
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> HostedAuthorization:
+        """Create a host-owned browser authorization for a registered provider."""
+        provider = provider_identifier.strip().lower()
+        adapter = self._oauth_adapters.get(provider)
+        if adapter is None:
+            raise AuthenticationError(
+                f"{provider_identifier!r} has no registered hosted OAuth authorization."
+            )
+        return adapter.authorization_request(
+            redirect_uri,
+            client_id=client_id,
+            state=state,
+            code_verifier=code_verifier,
+        )
+
+    def serialize_token(self, provider_identifier: str, tokens: OAuthTokens) -> Mapping[str, Any]:
+        """Serialize credentials through the provider-owned OAuth adapter."""
+        provider = provider_identifier.strip().lower()
+        adapter = self._oauth_adapters.get(provider)
+        if adapter is None:
+            raise AuthenticationError(f"{provider_identifier!r} has no registered OAuth adapter.")
+        return adapter.serialize_tokens(tokens)
+
+    def deserialize_token(
+        self, provider_identifier: str, payload: Mapping[str, Any]
+    ) -> OAuthTokens:
+        """Deserialize credentials through the provider-owned OAuth adapter."""
+        provider = provider_identifier.strip().lower()
+        adapter = self._oauth_adapters.get(provider)
+        if adapter is None:
+            raise AuthenticationError(f"{provider_identifier!r} has no registered OAuth adapter.")
+        return adapter.deserialize_tokens(payload)
+
     def register_oauth(
         self,
         provider_identifier: str,
@@ -216,6 +258,9 @@ class ProviderAuthentication:
         flow_factory: Callable[[CredentialStore], LoginFlow] | None = None,
         token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
         header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]] | None = None,
+        authorization_factory: Callable[..., HostedAuthorization] | None = None,
+        token_serializer: Callable[[OAuthTokens], Mapping[str, Any]] | None = None,
+        token_deserializer: Callable[[Mapping[str, Any]], OAuthTokens] | None = None,
     ) -> None:
         """Register a provider's standard OAuth endpoints without coupling to its model transport."""
         provider = provider_identifier.strip().lower()
@@ -227,6 +272,9 @@ class ProviderAuthentication:
             flow_factory=flow_factory,
             token_parser=token_parser,
             header_builder=header_builder,
+            authorization_factory=authorization_factory,
+            token_serializer=token_serializer,
+            token_deserializer=token_deserializer,
         )
 
     def sign_out(self, provider_identifier: str, *, store: CredentialStore | None = None) -> None:

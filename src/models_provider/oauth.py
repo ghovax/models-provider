@@ -10,7 +10,7 @@ import secrets
 import time
 import urllib.parse
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -110,10 +110,39 @@ class OAuthAuthorization:
 
 
 @runtime_checkable
+class HostedAuthorization(Protocol):
+    """Authorization contract for a host-owned browser sign-in."""
+
+    @property
+    def authorize_url(self) -> str: ...
+
+    @property
+    def state(self) -> str: ...
+
+    @property
+    def code_verifier(self) -> str: ...
+
+    async def exchange(self, code: str = "") -> OAuthTokens: ...
+
+
+@runtime_checkable
 class OAuthProvider(Protocol):
     """An OAuth adapter used by :class:`ProviderAuthentication`."""
 
     def flow(self, store: CredentialStore) -> LoginFlow: ...
+
+    def authorization_request(
+        self,
+        redirect_uri: str,
+        *,
+        client_id: str = "",
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> HostedAuthorization: ...
+
+    def serialize_tokens(self, tokens: OAuthTokens) -> Mapping[str, Any]: ...
+
+    def deserialize_tokens(self, payload: Mapping[str, Any]) -> OAuthTokens: ...
 
     async def valid_token(self, store: CredentialStore) -> OAuthTokens: ...
 
@@ -141,6 +170,125 @@ def _oauth_tokens_from_payload(
         ),
         expires_at=time.time() + max(1.0, expires_in),
     )
+
+
+def _oauth_tokens_to_mapping(tokens: OAuthTokens) -> dict[str, Any]:
+    return {
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "expires_at": tokens.expires_at,
+    }
+
+
+def _oauth_tokens_from_mapping(payload: Mapping[str, Any]) -> OAuthTokens:
+    if not isinstance(payload, Mapping):
+        raise AuthenticationError("Stored OAuth credentials are invalid.")
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise AuthenticationError("Stored OAuth credentials contain no access token.")
+    try:
+        expires_at = float(payload.get("expires_at") or 0.0)
+    except (TypeError, ValueError) as error:
+        raise AuthenticationError("Stored OAuth credentials have an invalid expiry.") from error
+    return OAuthTokens(
+        access_token=access_token,
+        refresh_token=str(payload.get("refresh_token") or ""),
+        expires_at=expires_at,
+    )
+
+
+class OAuthAuthorizationRequest:
+    """Provider-neutral authorization-code request for a host-owned callback."""
+
+    def __init__(
+        self,
+        provider_identifier: str,
+        configuration: OAuthConfiguration,
+        *,
+        token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
+        redirect_uri: str | None = None,
+        client_id: str = "",
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> None:
+        if not configuration.authorization_url:
+            raise ValueError("authorization_url is required for a browser OAuth request")
+        selected_redirect_uri = redirect_uri or configuration.redirect_uri
+        parsed = urllib.parse.urlparse(selected_redirect_uri)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("redirect_uri must be an absolute HTTP(S) URL")
+        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("redirect_uri must use HTTPS outside localhost")
+        selected_client_id = client_id.strip() or configuration.client_id
+        if not selected_client_id:
+            raise ValueError("client_id cannot be empty")
+        self.provider_identifier = provider_identifier.strip().lower()
+        self.configuration = replace(
+            configuration,
+            redirect_uri=selected_redirect_uri,
+            client_id=selected_client_id,
+        )
+        self._token_parser = token_parser or _oauth_tokens_from_payload
+        self._state = state or secrets.token_urlsafe(24)
+        self._code_verifier = code_verifier or _pkce_verifier()
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def code_verifier(self) -> str:
+        return self._code_verifier
+
+    @property
+    def authorize_url(self) -> str:
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(self._code_verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
+        parameters = {
+            **self.configuration.authorization_parameters,
+            "response_type": "code",
+            "client_id": self.configuration.client_id,
+            "redirect_uri": self.configuration.redirect_uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": self._state,
+        }
+        if self.configuration.scopes:
+            parameters["scope"] = " ".join(self.configuration.scopes)
+        return f"{self.configuration.authorization_url}?{urllib.parse.urlencode(parameters)}"
+
+    async def exchange(self, code: str = "") -> OAuthTokens:
+        if not code.strip():
+            raise AuthenticationError("OAuth authorization returned no code.")
+        data = {
+            **self.configuration.token_parameters,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": self.configuration.redirect_uri,
+            "client_id": self.configuration.client_id,
+            "code_verifier": self._code_verifier,
+        }
+        auth = None
+        if self.configuration.token_endpoint_auth_method == "client_secret_post":
+            data["client_secret"] = self.configuration.client_secret
+        elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
+            auth = (self.configuration.client_id, self.configuration.client_secret)
+            data.pop("client_id", None)
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(self.configuration.token_url, data=data, auth=auth)
+                response.raise_for_status()
+                payload = response.json()
+            if not isinstance(payload, Mapping):
+                raise AuthenticationError("OAuth returned an invalid token response.")
+            return self._token_parser(payload, None)
+        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
+            raise AuthenticationError(
+                f"Could not complete {self.provider_identifier} sign-in: {error}"
+            ) from error
 
 
 class OAuthLoginFlow:
@@ -187,7 +335,11 @@ class OAuthLoginFlow:
 
     async def start(self) -> None:
         redirect = urllib.parse.urlparse(self.configuration.redirect_uri)
-        if redirect.scheme != "http" or redirect.hostname not in {"127.0.0.1", "localhost"}:
+        if redirect.scheme != "http" or redirect.hostname not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
             raise AuthenticationError("OAuth loopback redirect_uri must use localhost")
         if redirect.port is None or redirect.port == 0:
             raise AuthenticationError("OAuth loopback redirect_uri must specify a fixed port")
@@ -388,12 +540,18 @@ class OAuthAdapter:
         flow_factory: Callable[[CredentialStore], LoginFlow] | None = None,
         token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
         header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]] | None = None,
+        authorization_factory: Callable[..., HostedAuthorization] | None = None,
+        token_serializer: Callable[[OAuthTokens], Mapping[str, Any]] | None = None,
+        token_deserializer: Callable[[Mapping[str, Any]], OAuthTokens] | None = None,
     ) -> None:
         self.provider_identifier = provider_identifier.strip().lower()
         self.configuration = configuration
         self._flow_factory = flow_factory
         self._token_parser = token_parser or _oauth_tokens_from_payload
         self._header_builder = header_builder
+        self._authorization_factory = authorization_factory
+        self._token_serializer = token_serializer or _oauth_tokens_to_mapping
+        self._token_deserializer = token_deserializer or _oauth_tokens_from_mapping
         self._refresh_lock = asyncio.Lock()
 
     def flow(self, store: CredentialStore) -> LoginFlow:
@@ -415,6 +573,41 @@ class OAuthAdapter:
             store,
             token_parser=self._token_parser,
         )
+
+    def authorization_request(
+        self,
+        redirect_uri: str,
+        *,
+        client_id: str = "",
+        state: str | None = None,
+        code_verifier: str | None = None,
+    ) -> HostedAuthorization:
+        if self._authorization_factory is not None:
+            return self._authorization_factory(
+                redirect_uri,
+                client_id=client_id,
+                state=state,
+                code_verifier=code_verifier,
+            )
+        if not self.configuration.authorization_url:
+            raise AuthenticationError(
+                f"{self.provider_identifier!r} has no callback-based OAuth flow."
+            )
+        return OAuthAuthorizationRequest(
+            self.provider_identifier,
+            self.configuration,
+            token_parser=self._token_parser,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+            state=state,
+            code_verifier=code_verifier,
+        )
+
+    def serialize_tokens(self, tokens: OAuthTokens) -> Mapping[str, Any]:
+        return self._token_serializer(tokens)
+
+    def deserialize_tokens(self, payload: Mapping[str, Any]) -> OAuthTokens:
+        return self._token_deserializer(payload)
 
     async def valid_token(self, store: CredentialStore) -> OAuthTokens:
         tokens = store.load(self.provider_identifier)

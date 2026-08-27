@@ -75,6 +75,28 @@ model = models.chat("chatgpt/gpt-5")
 The library prepares the callback listener and returns the URL. It does not open a
 browser or make a user-interface decision.
 
+Hosts with a public callback can use the provider-neutral authorization request. The host
+must keep its `state` and `code_verifier` until the callback, validate the returned state,
+and then exchange the one-time code:
+
+```python
+from models_provider import ProviderAuthentication
+
+authentication = ProviderAuthentication()
+authorization = authentication.authorization_request(
+    "chatgpt",
+    "https://agent.example.com/github/auth/chatgpt/callback",
+)
+print(authorization.authorize_url)
+
+# In the callback handler, after checking that the state matches:
+tokens = await authorization.exchange(code)
+```
+
+The host persists credentials through `authentication.serialize_token(provider, tokens)`
+and restores them through `authentication.deserialize_token(provider, payload)`. Providers
+own their token shape, refresh behavior, and request headers.
+
 ## Model contract
 
 ```python
