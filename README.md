@@ -1,6 +1,8 @@
 # Models Provider
 
-Models Provider gives applications one independent interface for discovering models, resolving credentials, creating chat models, and collecting usage. It has no dependency on LangMesh or Teacher.
+Models Provider gives applications one independent interface for discovering models,
+resolving credentials, creating chat models, and collecting usage. It has no dependency
+on LangMesh or Teacher.
 
 ## Public flow
 
@@ -17,7 +19,8 @@ model = models.chat(
 answer = model.invoke("Explain spaced repetition in two sentences.")
 ```
 
-`Models` loads the models.dev catalogue lazily on first use. Applications do not need to load or pass a catalogue explicitly.
+`Models` loads the models.dev catalogue lazily on first use. Applications do not need to
+load or pass a catalogue explicitly.
 
 ```python
 models.list()
@@ -27,7 +30,8 @@ models.find("openai/gpt-4.1-mini")
 
 ## Credentials
 
-API keys are resolved from an explicit credential store and then from the provider's environment variables. OAuth tokens are stored and refreshed through the same store.
+API keys are resolved from an explicit credential store and then from the provider's
+environment variables. OAuth tokens are stored and refreshed through the same store.
 
 ```python
 from models_provider import ApiKeyCredential, CredentialStore, Models
@@ -40,7 +44,8 @@ models = Models(credentials=credentials)
 model = models.chat("openai/gpt-4.1-mini")
 ```
 
-The credential interface is abstract and embedding applications provide persistent implementations when required:
+The credential interface is abstract and embedding applications provide persistent
+implementations when required:
 
 ```python
 class CredentialStore(ABC):
@@ -49,7 +54,8 @@ class CredentialStore(ABC):
     def clear(self, provider: str) -> None: ...
 ```
 
-`InMemoryCredentialStore` is a concrete store for short-lived applications and mock runs. It is not the credential abstraction.
+`InMemoryCredentialStore` is a concrete store for short-lived applications and mock
+runs. It is not the credential abstraction.
 
 ## OAuth
 
@@ -63,7 +69,8 @@ await authorization.complete()
 model = models.chat("chatgpt/gpt-5")
 ```
 
-The library prepares the callback listener and returns the URL. It does not open a browser or make a user-interface decision.
+The library prepares the callback listener and returns the URL. It does not open a
+browser or make a user-interface decision.
 
 ## Model contract
 
@@ -76,14 +83,16 @@ ModelProvider.chat(
 ) -> BaseChatModel
 ```
 
-The model identifier is the only model-selection value callers need. Catalogue records, provider routing, authentication headers, refresh behavior, and usage normalization remain inside Models Provider.
+The model identifier is the only model-selection value callers need. Catalogue records,
+provider routing, authentication headers, refresh behavior, and usage normalization
+remain inside Models Provider.
 
 ## Ownership
 
-| Responsibility | Owner |
-| --- | --- |
-| Model catalogue | Models Provider |
-| API keys, OAuth, and cloud credentials | Models Provider |
-| Provider-specific clients | Models Provider |
+| Responsibility                          | Owner                 |
+| --------------------------------------- | --------------------- |
+| Model catalogue                         | Models Provider       |
+| API keys, OAuth, and cloud credentials  | Models Provider       |
+| Provider-specific clients               | Models Provider       |
 | Sessions, tools, permissions, and files | Embedding application |
-| Lesson generation | Teacher |
+| Lesson generation                       | Teacher               |
