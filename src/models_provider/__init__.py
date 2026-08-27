@@ -1,6 +1,5 @@
 """Independent models.dev catalogue and interchangeable model implementations."""
 
-from .catalogue import MODELS_DEV_API_URL, load_catalogue
 from .auth import (
     ApiKeyCredential,
     ApiKeyResolution,
@@ -14,8 +13,9 @@ from .auth import (
     DeviceLoginFlow,
     EnvironmentCredential,
     LoginFlow,
-    MemoryCredentialStore,
+    InMemoryCredentialStore,
     OAuthAdapter,
+    OAuthAuthorization,
     OAuthConfiguration,
     OAuthLoginFlow,
     OAuthProvider,
@@ -46,19 +46,11 @@ from .subscriptions import (
     get_usage_snapshot,
     set_usage_snapshot,
 )
-from .core import (
-    ModelCatalogue,
-    ModelConfiguration,
-    ModelProvider,
-    ModelUsage,
-    ModelRecord,
-    ProviderRecord,
-    ProviderRegistry,
-)
+from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
+from .facade import Models
 
 __all__ = [
-    "MODELS_DEV_API_URL",
     "ApiKeyCredential",
     "ApiKeyResolution",
     "AuthenticationError",
@@ -71,19 +63,17 @@ __all__ = [
     "DeviceLoginFlow",
     "EnvironmentCredential",
     "LoginFlow",
-    "MemoryCredentialStore",
+    "InMemoryCredentialStore",
     "OAuthAdapter",
+    "OAuthAuthorization",
     "OAuthConfiguration",
     "OAuthLoginFlow",
     "OAuthProvider",
     "OAuthTokens",
-    "ModelCatalogue",
-    "ModelConfiguration",
-    "ModelProvider",
     "ModelUsage",
+    "ModelProvider",
     "ModelRecord",
     "ProviderRecord",
-    "ProviderRegistry",
     "ProviderAuthentication",
     "ProviderAuthProfile",
     "provider_auth_profile",
@@ -92,7 +82,7 @@ __all__ = [
     "UsageWindow",
     "bind_credential_store",
     "current_credential_store",
-    "load_catalogue",
+    "Models",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",
@@ -111,20 +101,4 @@ __all__ = [
     "fetch_cursor_models",
     "get_usage_snapshot",
     "set_usage_snapshot",
-    "LiteLLMChatModel",
-    "LiteLLMProvider",
-    "provider_registry",
 ]
-
-
-def __getattr__(name: str):
-    """Load the optional heavy transport implementation only when requested."""
-    if name in {"LiteLLMChatModel", "LiteLLMProvider", "provider_registry"}:
-        from .litellm import LiteLLMChatModel, LiteLLMProvider, provider_registry
-
-        return {
-            "LiteLLMChatModel": LiteLLMChatModel,
-            "LiteLLMProvider": LiteLLMProvider,
-            "provider_registry": provider_registry,
-        }[name]
-    raise AttributeError(name)
