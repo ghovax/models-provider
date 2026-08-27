@@ -217,7 +217,7 @@ class OAuthAuthorizationRequest:
         parsed = urllib.parse.urlparse(selected_redirect_uri)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("redirect_uri must be an absolute HTTP(S) URL")
-        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
+        if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("redirect_uri must use HTTPS outside localhost")
         selected_client_id = client_id.strip() or configuration.client_id
         if not selected_client_id:
@@ -335,7 +335,11 @@ class OAuthLoginFlow:
 
     async def start(self) -> None:
         redirect = urllib.parse.urlparse(self.configuration.redirect_uri)
-        if redirect.scheme != "http" or redirect.hostname not in {"127.0.0.1", "localhost"}:
+        if redirect.scheme != "http" or redirect.hostname not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
             raise AuthenticationError("OAuth loopback redirect_uri must use localhost")
         if redirect.port is None or redirect.port == 0:
             raise AuthenticationError("OAuth loopback redirect_uri must specify a fixed port")
