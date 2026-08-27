@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, Callable
@@ -48,12 +47,14 @@ class ProviderAuthentication:
         api_keys: Mapping[str, str] | None = None,
         api_bases: Mapping[str, str] | None = None,
         store: CredentialStore | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         self._profiles = {key.lower(): value for key, value in (profiles or {}).items()}
         self._catalogue = catalogue
         self._api_keys = dict(api_keys or {})
         self._api_bases = dict(api_bases or {})
         self._store = store
+        self._environment = dict(environment or {})
         self._oauth_adapters: dict[str, OAuthProvider] = _default_oauth_adapters()
 
     def profile(
@@ -128,14 +129,14 @@ class ProviderAuthentication:
                 source = "stored"
         if not environment:
             for environment_name in profile.credential_environment_variables:
-                value = os.environ.get(environment_name, "").strip()
+                value = self._environment.get(environment_name, "").strip()
                 if value:
                     environment[environment_name] = value
             if environment and source == "none":
                 source = "environment"
         if not key:
             for environment_name in profile.environment_variables or environment_variables:
-                key = os.environ.get(environment_name, "").strip()
+                key = self._environment.get(environment_name, "").strip()
                 if key:
                     source = "environment"
                     break
@@ -151,18 +152,6 @@ class ProviderAuthentication:
             environment=environment,
             method=profile.method,
             source=source,
-        )
-
-    def resolve_key(
-        self,
-        provider_identifier: str,
-        *,
-        environment_variables: tuple[str, ...] = (),
-        store: CredentialStore | None = None,
-    ) -> ApiKeyResolution:
-        """Backward-compatible API-key-focused name for :meth:`resolve`."""
-        return self.resolve(
-            provider_identifier, environment_variables=environment_variables, store=store
         )
 
     def status(

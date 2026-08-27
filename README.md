@@ -9,7 +9,7 @@ on LangMesh or Teacher.
 ```python
 from models_provider import Models
 
-models = Models()
+models = Models.from_environment()
 
 model = models.chat(
     "openai/gpt-4.1-mini",
@@ -30,8 +30,11 @@ models.find("openai/gpt-4.1-mini")
 
 ## Credentials
 
-API keys are resolved from an explicit credential store and then from the provider's
-environment variables. OAuth tokens are stored and refreshed through the same store.
+`Models()` never reads process environment variables. Call `Models.from_environment()`
+when that is the intended credential source; it captures the environment explicitly at
+construction time. The library does not parse `.env` files; the host must load them
+before this call. An explicit credential store takes precedence over that snapshot.
+OAuth tokens are stored and refreshed through the same credential store.
 
 ```python
 from models_provider import ApiKeyCredential, CredentialStore, Models
