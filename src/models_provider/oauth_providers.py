@@ -538,6 +538,7 @@ class _BuiltInOAuthAdapter:
         authorization_factory: Callable[..., HostedAuthorization],
         token_serializer: Callable[[OAuthTokens], Mapping[str, Any]],
         token_deserializer: Callable[[Mapping[str, Any]], OAuthTokens],
+        registered_redirect_uri: str = "",
     ) -> None:
         self._flow_factory = flow_factory
         self._valid_token = valid_token
@@ -545,12 +546,17 @@ class _BuiltInOAuthAdapter:
         self._authorization_factory = authorization_factory
         self._token_serializer = token_serializer
         self._token_deserializer = token_deserializer
+        self._registered_redirect_uri = registered_redirect_uri
 
     def flow(self, store: CredentialStore) -> LoginFlow:
         return self._flow_factory(store)
 
     async def valid_token(self, store: CredentialStore) -> OAuthTokens:
         return await self._valid_token(store)
+
+    def redirect_uri(self) -> str:
+        """Return the redirect URI accepted by the built-in OAuth client."""
+        return self._registered_redirect_uri
 
     def authorization_request(
         self,
@@ -594,6 +600,7 @@ def _default_oauth_adapters() -> dict[str, OAuthProvider]:
             ),
             chatgpt_tokens_to_mapping,
             chatgpt_tokens_from_mapping,
+            CHATGPT_LOOPBACK_REDIRECT_URI,
         ),
         "cursor": _BuiltInOAuthAdapter(
             CursorLoginFlow,
