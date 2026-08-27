@@ -154,18 +154,6 @@ class ProviderAuthentication:
             source=source,
         )
 
-    def resolve_key(
-        self,
-        provider_identifier: str,
-        *,
-        environment_variables: tuple[str, ...] = (),
-        store: CredentialStore | None = None,
-    ) -> ApiKeyResolution:
-        """Backward-compatible API-key-focused name for :meth:`resolve`."""
-        return self.resolve(
-            provider_identifier, environment_variables=environment_variables, store=store
-        )
-
     def status(
         self,
         provider_identifier: str,
