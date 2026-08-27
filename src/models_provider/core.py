@@ -226,14 +226,17 @@ class ModelConfiguration:
 
 @runtime_checkable
 class ModelProvider(Protocol):
-    """Builds a chat model from a provider-qualified model configuration."""
+    """Creates chat models from provider-qualified identifiers."""
 
-    def create(self, configuration: ModelConfiguration) -> BaseChatModel:
-        """Create a model; credentials and transport state belong to the provider instance."""
-        ...
-
-    def scope(self) -> Any:
-        """Return a context manager for temporary provider-local state."""
+    def chat(
+        self,
+        model_identifier: str,
+        *,
+        temperature: float = 0.0,
+        reasoning_effort: str | None = "high",
+        timeout_seconds: float | None = 300.0,
+    ) -> BaseChatModel:
+        """Create a chat model; credentials remain owned by the provider instance."""
         ...
 
 

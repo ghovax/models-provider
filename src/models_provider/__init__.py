@@ -1,6 +1,6 @@
 """Independent models.dev catalogue and interchangeable model implementations."""
 
-from .catalogue import MODELS_DEV_API_URL, load_catalogue
+from .catalogue import MODELS_DEV_API_URL
 from .auth import (
     ApiKeyCredential,
     ApiKeyResolution,
@@ -14,8 +14,9 @@ from .auth import (
     DeviceLoginFlow,
     EnvironmentCredential,
     LoginFlow,
-    MemoryCredentialStore,
+    InMemoryCredentialStore,
     OAuthAdapter,
+    OAuthAuthorization,
     OAuthConfiguration,
     OAuthLoginFlow,
     OAuthProvider,
@@ -46,16 +47,9 @@ from .subscriptions import (
     get_usage_snapshot,
     set_usage_snapshot,
 )
-from .core import (
-    ModelCatalogue,
-    ModelConfiguration,
-    ModelProvider,
-    ModelUsage,
-    ModelRecord,
-    ProviderRecord,
-    ProviderRegistry,
-)
+from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
+from .facade import Models
 
 __all__ = [
     "MODELS_DEV_API_URL",
@@ -71,19 +65,17 @@ __all__ = [
     "DeviceLoginFlow",
     "EnvironmentCredential",
     "LoginFlow",
-    "MemoryCredentialStore",
+    "InMemoryCredentialStore",
     "OAuthAdapter",
+    "OAuthAuthorization",
     "OAuthConfiguration",
     "OAuthLoginFlow",
     "OAuthProvider",
     "OAuthTokens",
-    "ModelCatalogue",
-    "ModelConfiguration",
-    "ModelProvider",
     "ModelUsage",
+    "ModelProvider",
     "ModelRecord",
     "ProviderRecord",
-    "ProviderRegistry",
     "ProviderAuthentication",
     "ProviderAuthProfile",
     "provider_auth_profile",
@@ -92,7 +84,7 @@ __all__ = [
     "UsageWindow",
     "bind_credential_store",
     "current_credential_store",
-    "load_catalogue",
+    "Models",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",

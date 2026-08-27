@@ -216,6 +216,28 @@ class LiteLLMProvider:
         model._authentication = self.authentication
         return model
 
+    def chat(
+        self,
+        model_identifier: str,
+        *,
+        temperature: float = 0.0,
+        reasoning_effort: str | None = "high",
+        timeout_seconds: float | None = 300.0,
+    ) -> LiteLLMChatModel:
+        """Create a chat model from the concise public model identifier."""
+        if "/" not in model_identifier:
+            raise ValueError("model_identifier must have the form 'provider/model'")
+        provider, model = model_identifier.split("/", 1)
+        return self.create(
+            ModelConfiguration(
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+
     def scope(self) -> Any:
         from contextlib import nullcontext
 

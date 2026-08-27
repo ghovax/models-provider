@@ -10,17 +10,13 @@ from .core import ModelCatalogue
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 
 
-def load_catalogue(
+def _fetch_catalogue(
     *,
     url: str = MODELS_DEV_API_URL,
     timeout_seconds: float = 10.0,
     client: Any | None = None,
 ) -> ModelCatalogue:
-    """Fetch and parse a models.dev snapshot.
-
-    Network access is explicit. Model construction never performs an implicit catalogue fetch;
-    applications can load once at startup, cache the result, or provide a fixture payload.
-    """
+    """Fetch and parse a models.dev snapshot for the Models facade."""
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     import httpx
@@ -39,4 +35,4 @@ def load_catalogue(
     return ModelCatalogue.from_payload(payload)
 
 
-__all__ = ["MODELS_DEV_API_URL", "load_catalogue"]
+__all__ = ["MODELS_DEV_API_URL"]
