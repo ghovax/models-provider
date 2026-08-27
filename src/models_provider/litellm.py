@@ -85,7 +85,7 @@ class LiteLLMChatModel(BaseChatModel):
         params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
         resolved = None
         if self._authentication is not None and self.provider_identifier:
-            resolved = self._authentication.resolve_key(
+            resolved = self._authentication.resolve(
                 self.provider_identifier,
                 environment_variables=self.provider_environment_variables,
             )
@@ -131,13 +131,18 @@ class LiteLLMChatModel(BaseChatModel):
                 }
             )
         raw_usage = getattr(response, "usage", None)
-        usage_payload = raw_usage if isinstance(raw_usage, Mapping) else getattr(raw_usage, "__dict__", {})
+        usage_payload = (
+            raw_usage if isinstance(raw_usage, Mapping) else getattr(raw_usage, "__dict__", {})
+        )
         usage = ModelUsage.from_mapping(usage_payload)
         usage_metadata = {
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
-            "input_token_details": {"cache_read": usage.cache_read_tokens, "cache_creation": usage.cache_write_tokens},
+            "input_token_details": {
+                "cache_read": usage.cache_read_tokens,
+                "cache_creation": usage.cache_write_tokens,
+            },
             "output_token_details": {"reasoning": usage.reasoning_tokens},
         }
         message = AIMessage(
@@ -160,6 +165,8 @@ class LiteLLMChatModel(BaseChatModel):
     async def _agenerate(
         self, messages: Sequence[BaseMessage], stop: list[str] | None = None, **kwargs: Any
     ) -> ChatResult:
+        if self._authentication is not None and self.provider_identifier:
+            await self._authentication.ensure_valid(self.provider_identifier)
         parameters = self._parameters(stop=stop, **kwargs)
         response = await litellm.acompletion(
             messages=[self._message(message) for message in messages], **parameters
@@ -182,7 +189,7 @@ class LiteLLMProvider:
         self.api_keys = dict(api_keys or {})
         self.api_bases = dict(api_bases or {})
         self.authentication = authentication or ProviderAuthentication(
-            api_keys=self.api_keys, api_bases=self.api_bases
+            catalogue=catalogue, api_keys=self.api_keys, api_bases=self.api_bases
         )
 
     def create(self, configuration: ModelConfiguration) -> LiteLLMChatModel:
@@ -191,7 +198,9 @@ class LiteLLMProvider:
         if record is None:
             raise ValueError(f"model {configuration.identifier!r} is not in the supplied catalogue")
         if provider is None:
-            raise ValueError(f"provider {configuration.provider!r} is not in the supplied catalogue")
+            raise ValueError(
+                f"provider {configuration.provider!r} is not in the supplied catalogue"
+            )
         prefix = _SDK_PREFIXES.get(provider.npm, "openai")
         model = LiteLLMChatModel(
             model=f"{prefix}/{record.model}",
