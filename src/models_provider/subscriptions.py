@@ -24,14 +24,38 @@ from .auth import (
 )
 
 __all__ = [
-    "APPEND_PATH", "AGENT_OPEN_URL", "AGENT_PRIVACY_URL", "AVAILABLE_MODELS_URL", "CLIENT_TYPE", "CLIENT_VERSION", "GET_ME_URL", "MODELS_URL",
-    "ORIGINATOR", "RESPONSES_URL", "RUN_HOSTS", "RUN_PATH", "STATUS_RESOURCE_EXHAUSTED",
-    "STATUS_UNAUTHENTICATED", "UNKNOWN_CONTEXT_WINDOW", "cached_chatgpt_models",
-    "cached_cursor_models", "capture_usage_headers", "clear_chatgpt_models_cache",
-    "clear_cursor_models_cache", "clear_usage_snapshot", "display_cursor_account",
-    "fetch_chatgpt_models", "fetch_cursor_models", "get_usage_snapshot", "machine_time_zone",
-    "observed_context_window", "record_context_window", "request_chatgpt_headers",
-    "request_cursor_headers", "set_usage_snapshot", "USABLE_MODELS_URL",
+    "APPEND_PATH",
+    "AGENT_OPEN_URL",
+    "AGENT_PRIVACY_URL",
+    "AVAILABLE_MODELS_URL",
+    "CLIENT_TYPE",
+    "CLIENT_VERSION",
+    "GET_ME_URL",
+    "MODELS_URL",
+    "ORIGINATOR",
+    "RESPONSES_URL",
+    "RUN_HOSTS",
+    "RUN_PATH",
+    "STATUS_RESOURCE_EXHAUSTED",
+    "STATUS_UNAUTHENTICATED",
+    "UNKNOWN_CONTEXT_WINDOW",
+    "cached_chatgpt_models",
+    "cached_cursor_models",
+    "capture_usage_headers",
+    "clear_chatgpt_models_cache",
+    "clear_cursor_models_cache",
+    "clear_usage_snapshot",
+    "display_cursor_account",
+    "fetch_chatgpt_models",
+    "fetch_cursor_models",
+    "get_usage_snapshot",
+    "machine_time_zone",
+    "observed_context_window",
+    "record_context_window",
+    "request_chatgpt_headers",
+    "request_cursor_headers",
+    "set_usage_snapshot",
+    "USABLE_MODELS_URL",
 ]
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -74,13 +98,20 @@ async def fetch_chatgpt_models() -> dict[str, dict[str, Any]]:
         return deepcopy(_chatgpt_models)
     try:
         tokens = await valid_chatgpt_tokens()
-        headers = {key: value for key, value in request_chatgpt_headers(tokens).items() if key != "Accept"}
+        headers = {
+            key: value for key, value in request_chatgpt_headers(tokens).items() if key != "Accept"
+        }
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(MODELS_URL, params={"client_version": CLIENT_VERSION}, headers=headers)
+            response = await client.get(
+                MODELS_URL, params={"client_version": CLIENT_VERSION}, headers=headers
+            )
             response.raise_for_status()
             for entry in _response_models(response):
                 if entry.get("slug"):
-                    _chatgpt_models[str(entry["slug"])] = {"name": entry.get("display_name") or entry["slug"], "context": int(entry.get("context_window") or 0)}
+                    _chatgpt_models[str(entry["slug"])] = {
+                        "name": entry.get("display_name") or entry["slug"],
+                        "context": int(entry.get("context_window") or 0),
+                    }
     except (AuthenticationError, httpx.HTTPError, ValueError, TypeError):
         return {}
     return deepcopy(_chatgpt_models)
@@ -139,9 +170,7 @@ async def fetch_cursor_models() -> dict[str, dict[str, Any]]:
                     context = (
                         round(
                             float(context_match.group(1))
-                            * {"k": 1_000, "m": 1_000_000}.get(
-                                context_match.group(2) or "", 1
-                            )
+                            * {"k": 1_000, "m": 1_000_000}.get(context_match.group(2) or "", 1)
                         )
                         if context_match
                         else 0
@@ -154,8 +183,7 @@ async def fetch_cursor_models() -> dict[str, dict[str, Any]]:
                     }
             if not usable_entries:
                 usable_entries = [
-                    {"modelId": model_name, "displayName": model_name}
-                    for model_name in variants
+                    {"modelId": model_name, "displayName": model_name} for model_name in variants
                 ]
             for entry in usable_entries:
                 model_identifier = entry.get("modelId") or entry.get("displayModelId")
@@ -231,7 +259,9 @@ async def display_cursor_account(tokens: CursorTokens) -> str:
         for key in ("email", "userEmail", "cachedEmail"):
             value = payload.get(key) if isinstance(payload, dict) else None
             if isinstance(value, str) and value.strip():
-                updated = CursorTokens(tokens.access_token, tokens.refresh_token, value.strip(), tokens.expires_at)
+                updated = CursorTokens(
+                    tokens.access_token, tokens.refresh_token, value.strip(), tokens.expires_at
+                )
                 current_credential_store().save("cursor", updated)
                 return value.strip()
     except (httpx.HTTPError, ValueError, TypeError):
@@ -267,8 +297,28 @@ def capture_usage_headers(headers: Mapping[str, str]) -> None:
             if resets_at is None:
                 reset_after = _header_int(headers.get(f"x-codex-{window_name}-reset-after-seconds"))
                 resets_at = int(time.time()) + reset_after if reset_after is not None else None
-            windows.append({"key": window_name, "used_percent": _header_float(headers.get(f"x-codex-{window_name}-used-percent")) or 0.0, "window_minutes": duration, "resets_at": resets_at})
-    _usage_snapshot = {"plan_type": headers.get("x-codex-plan-type", ""), "active_limit": headers.get("x-codex-active-limit", ""), "captured_at": int(time.time()), "credits": {"has_credits": _header_bool(headers.get("x-codex-credits-has-credits")), "balance": _header_float(headers.get("x-codex-credits-balance")), "unlimited": _header_bool(headers.get("x-codex-credits-unlimited"))}, "windows": windows}
+            windows.append(
+                {
+                    "key": window_name,
+                    "used_percent": _header_float(
+                        headers.get(f"x-codex-{window_name}-used-percent")
+                    )
+                    or 0.0,
+                    "window_minutes": duration,
+                    "resets_at": resets_at,
+                }
+            )
+    _usage_snapshot = {
+        "plan_type": headers.get("x-codex-plan-type", ""),
+        "active_limit": headers.get("x-codex-active-limit", ""),
+        "captured_at": int(time.time()),
+        "credits": {
+            "has_credits": _header_bool(headers.get("x-codex-credits-has-credits")),
+            "balance": _header_float(headers.get("x-codex-credits-balance")),
+            "unlimited": _header_bool(headers.get("x-codex-credits-unlimited")),
+        },
+        "windows": windows,
+    }
 
 
 def get_usage_snapshot() -> dict[str, Any] | None:

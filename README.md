@@ -113,7 +113,7 @@ authentication = ProviderAuthentication(
     store=credential_store,
 )
 
-resolved = authentication.resolve_key("openai")
+resolved = authentication.resolve("openai")
 # ApiKeyResolution(provider="openai", api_key="...", api_base="", source="configured")
 status = authentication.status("openai")
 # AuthenticationStatus(provider="openai", method="api_key", signed_in=True, source="configured")
@@ -121,8 +121,10 @@ status = authentication.status("openai")
 
 Resolution checks explicit keys, stored `ApiKeyCredential` values, the provider's
 declared environment variables, and finally an anonymous provider key when one is
-declared. `save_api_key` and `sign_out` persist or remove credentials through the
-supplied store. The library never writes a secret file by itself.
+declared. Cloud profiles such as Vertex and Bedrock return named environment values
+without mislabeling project or region settings as API keys. `save_api_key` and
+`sign_out` persist or remove credentials through the supplied store. The library never
+writes a secret file by itself.
 
 The package also provides a reusable OAuth contract for providers that publish standard
 authorization endpoints:

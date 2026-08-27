@@ -92,7 +92,9 @@ class ModelRecord:
         limits = payload.get("limit") or {}
         costs = payload.get("cost") or {}
         input_modalities = tuple(_text(item) for item in modalities.get("input", ()) if _text(item))
-        output_modalities = tuple(_text(item) for item in modalities.get("output", ()) if _text(item))
+        output_modalities = tuple(
+            _text(item) for item in modalities.get("output", ()) if _text(item)
+        )
         model_id = _text(payload.get("id")) or model
         return cls(
             identifier=f"{provider}/{model_id}",
@@ -167,7 +169,9 @@ class ModelCatalogue:
                 continue
             for raw_model, raw_definition in raw_models.items():
                 if isinstance(raw_definition, Mapping):
-                    models.append(ModelRecord.from_payload(identifier, _text(raw_model), raw_definition))
+                    models.append(
+                        ModelRecord.from_payload(identifier, _text(raw_model), raw_definition)
+                    )
         return cls(providers, models)
 
     def providers(self) -> tuple[ProviderRecord, ...]:

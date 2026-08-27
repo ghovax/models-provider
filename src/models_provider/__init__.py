@@ -12,6 +12,7 @@ from .auth import (
     CursorLoginFlow,
     CursorTokens,
     DeviceLoginFlow,
+    EnvironmentCredential,
     LoginFlow,
     MemoryCredentialStore,
     OAuthAdapter,
@@ -30,6 +31,7 @@ from .auth import (
     cursor_tokens,
     valid_chatgpt_tokens,
     valid_cursor_tokens,
+    provider_auth_profile,
 )
 from .subscriptions import (
     cached_chatgpt_models,
@@ -67,6 +69,7 @@ __all__ = [
     "CursorLoginFlow",
     "CursorTokens",
     "DeviceLoginFlow",
+    "EnvironmentCredential",
     "LoginFlow",
     "MemoryCredentialStore",
     "OAuthAdapter",
@@ -83,6 +86,7 @@ __all__ = [
     "ProviderRegistry",
     "ProviderAuthentication",
     "ProviderAuthProfile",
+    "provider_auth_profile",
     "UsageLedger",
     "UsageSnapshot",
     "UsageWindow",
