@@ -327,7 +327,7 @@ class ProviderAuthentication:
             return AuthenticationStatus(
                 profile.identifier,
                 profile.method,
-                signed_in=bool(resolution.api_key),
+                signed_in=bool(resolution.api_key) and resolution.source != "anonymous",
                 source=resolution.source,
             )
         return AuthenticationStatus(
