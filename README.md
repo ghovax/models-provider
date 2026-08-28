@@ -1,8 +1,9 @@
 # Models Provider
 
 Models Provider gives applications one independent interface for discovering models,
-resolving credentials, creating chat models, and collecting usage. It has no dependency
-on any application library.
+resolving credentials, creating chat models, and collecting usage. It uses the public
+[models.dev catalogue](https://models.dev) and has no dependency on any application
+library.
 
 ## Public flow
 
@@ -33,8 +34,9 @@ models.find("openai/gpt-4.1-mini")
 `Models()` never reads process environment variables. Call `Models.from_environment()`
 when that is the intended credential source; it captures the environment explicitly at
 construction time. The library does not parse `.env` files; the host must load them
-before this call. An explicit credential store takes precedence over that snapshot.
-OAuth tokens are stored and refreshed through the same credential store.
+before this call. When both are supplied, an explicit credential store takes precedence
+over that environment snapshot. OAuth tokens are stored and refreshed through the
+selected credential store.
 
 ```python
 from models_provider import ApiKeyCredential, CredentialStore, Models
@@ -49,14 +51,15 @@ models = Models(credentials=credentials)
 model = models.chat("openai/gpt-4.1-mini")
 ```
 
-The credential interface is abstract and embedding applications provide persistent
-implementations when required:
+The credential interface is abstract. Embedding applications provide persistent
+implementations when required; stores hold `ApiKeyCredential`,
+`EnvironmentCredential`, or provider-specific OAuth token values:
 
 ```python
 class CredentialStore(ABC):
-    def load(self, provider: str) -> Credential | None: ...
-    def save(self, provider: str, credential: Credential) -> None: ...
-    def clear(self, provider: str) -> None: ...
+    def load(self, provider_identifier: str) -> object | None: ...
+    def save(self, provider_identifier: str, credentials: object) -> None: ...
+    def clear(self, provider_identifier: str) -> None: ...
 ```
 
 `InMemoryCredentialStore` is a concrete store for short-lived applications and mock
@@ -101,9 +104,16 @@ For ChatGPT, `redirect_uri` is the registered loopback URI
 URL, let the browser return to localhost, and receive the copied one-time code through its
 own completion endpoint. Other providers may return a registered HTTPS callback instead.
 
-The host persists credentials through `authentication.serialize_token(provider, tokens)`
-and restores them through `authentication.deserialize_token(provider, payload)`. Providers
-own their token shape, refresh behavior, and request headers.
+The host can serialize credentials before persisting them and deserialize them when
+restoring them:
+
+```python
+payload = authentication.serialize_token("chatgpt", tokens)
+restored_tokens = authentication.deserialize_token("chatgpt", payload)
+```
+
+The host chooses where to persist the payload. Providers own their token shape, refresh
+behavior, and request headers.
 
 ## Model contract
 
@@ -125,11 +135,15 @@ remain inside Models Provider.
 Models Provider owns:
 
 - the models.dev catalogue;
-- API keys, OAuth credentials, and cloud credentials;
-- provider-specific clients;
-- authentication headers, refresh behavior, and usage normalization.
+- credential resolution and provider-specific authentication;
+- provider-specific clients, authentication headers, and refresh behavior;
+- usage normalization.
 
 The embedding application owns:
 
+- the credential store and its persistence policy;
 - sessions, tools, permissions, and files;
 - application workflows and domain behavior.
+
+Credentials remain in the store supplied by the embedding application; Models Provider
+does not choose a storage backend or write secret files by itself.
