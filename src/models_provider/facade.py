@@ -110,6 +110,17 @@ class Models:
         provider = catalogue.provider(provider_identifier)
         if record is None or provider is None:
             raise ValueError(f"model {model_identifier!r} is not in the models.dev catalogue")
+        if provider_identifier == "chatgpt":
+            from .chatgpt import ChatGPTResponsesModel
+
+            return ChatGPTResponsesModel(
+                model=record.model,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                timeout=timeout_seconds,
+                context_length=record.context_length,
+                credential_store=self._credentials,
+            )
         from .litellm import LiteLLMChatModel, _SDK_PREFIXES
 
         model = LiteLLMChatModel(
