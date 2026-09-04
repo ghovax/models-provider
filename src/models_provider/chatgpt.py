@@ -133,7 +133,7 @@ class ChatGPTResponsesModel(BaseChatModel):
             payload["instructions"] = instructions
         tools = kwargs.get("tools")
         if tools:
-            payload["tools"] = [self._to_responses_tool(tool) for tool in tools]
+            payload["tools"] = [self.responses_tool(tool) for tool in tools]
         if self.session_id:
             payload["client_metadata"] = {
                 "session_id": self.session_id,
