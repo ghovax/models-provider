@@ -485,6 +485,25 @@ class ChatGPTResponsesModel(BaseChatModel):
             async for chunk in self._astream_http(payload, headers, state):
                 yield chunk
 
+    async def stream_generations(
+        self,
+        messages: Sequence[BaseMessage],
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Stream provider generations for an embedding model wrapper."""
+        async for chunk in self._astream(messages, stop=stop, **kwargs):
+            yield chunk
+
+    def generate_result(
+        self,
+        messages: Sequence[BaseMessage],
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Generate one result for an embedding model wrapper."""
+        return self._generate(messages, stop=stop, **kwargs)
+
     @classmethod
     def _chunks_to_result(cls, chunks: list[AIMessageChunk]) -> ChatResult:
         aggregate = add_ai_message_chunks(chunks[0], *chunks[1:]) if chunks else None
