@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any, AsyncIterator, Callable, Optional, cast
+from typing import Any, AsyncIterator, Callable, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.messages.ai import add_ai_message_chunks
 from langchain_core.messages.content import ContentBlock, ReasoningContentBlock, TextContentBlock
 from langchain_core.messages.tool import ToolCallChunk
@@ -20,7 +26,6 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 from websockets.asyncio.client import connect
 
-from .credentials import CredentialStore
 from .errors import AuthenticationError, ContextWindowError
 from .oauth_providers import ChatGPTTokens, request_chatgpt_headers, valid_chatgpt_tokens
 from .subscriptions import RESPONSES_URL, cached_chatgpt_models, capture_usage_headers
@@ -144,43 +149,55 @@ class ChatGPTResponsesModel(BaseChatModel):
                 if not instructions:
                     instructions = text
                 elif text:
-                    items.append({
-                        "type": "message",
-                        "role": "developer",
-                        "content": [{"type": "input_text", "text": text}],
-                    })
+                    items.append(
+                        {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [{"type": "input_text", "text": text}],
+                        }
+                    )
                 continue
             if isinstance(message, ToolMessage):
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": _text(message),
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.tool_call_id,
+                        "output": _text(message),
+                    }
+                )
                 continue
             if isinstance(message, AIMessage):
                 items.extend(_reasoning_items(message, self.model))
                 text = _text(message)
                 if text:
-                    items.append({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": text}],
-                    })
+                    items.append(
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}],
+                        }
+                    )
                 for call in message.tool_calls or []:
                     arguments = call.get("args")
-                    items.append({
-                        "type": "function_call",
-                        "call_id": call.get("id"),
-                        "name": call.get("name"),
-                        "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":")),
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call.get("id"),
+                            "name": call.get("name"),
+                            "arguments": arguments
+                            if isinstance(arguments, str)
+                            else json.dumps(arguments, separators=(",", ":")),
+                        }
+                    )
                 continue
             role = "developer" if message.additional_kwargs.get("reminder") else "user"
-            items.append({
-                "type": "message",
-                "role": role,
-                "content": [{"type": "input_text", "text": _text(message)}],
-            })
+            items.append(
+                {
+                    "type": "message",
+                    "role": role,
+                    "content": [{"type": "input_text", "text": _text(message)}],
+                }
+            )
         return instructions, items
 
     @staticmethod
@@ -277,7 +294,9 @@ class ChatGPTResponsesModel(BaseChatModel):
             usage = cls._usage(response.get("usage"))
             return ChatGenerationChunk(
                 message=AIMessageChunk(content="", usage_metadata=usage),
-                generation_info={"finish_reason": "tool_calls" if state.get("saw_tool_call") else "stop"},
+                generation_info={
+                    "finish_reason": "tool_calls" if state.get("saw_tool_call") else "stop"
+                },
             )
         if event_type in ("response.failed", "response.error", "error"):
             response = data.get("response") or {}
@@ -307,7 +326,9 @@ class ChatGPTResponsesModel(BaseChatModel):
 
     @staticmethod
     def _content_block_identifier(data: dict[str, Any]) -> str:
-        return str(data.get("item_id") or f"response-output-{int(data.get('output_index', 0) or 0)}")
+        return str(
+            data.get("item_id") or f"response-output-{int(data.get('output_index', 0) or 0)}"
+        )
 
     @classmethod
     def _text_content_block(cls, data: dict[str, Any]) -> TextContentBlock:
@@ -394,7 +415,9 @@ class ChatGPTResponsesModel(BaseChatModel):
         except Exception as error:  # noqa: BLE001 — the caller owns the HTTP fallback
             raise _ResponsesWebSocketUnavailable(str(error)) from error
         try:
-            await connection.send(json.dumps(self._websocket_payload(payload), separators=(",", ":")))
+            await connection.send(
+                json.dumps(self._websocket_payload(payload), separators=(",", ":"))
+            )
             async for message in connection:
                 if isinstance(message, bytes):
                     message = message.decode("utf-8", "replace")
@@ -419,7 +442,9 @@ class ChatGPTResponsesModel(BaseChatModel):
         self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
     ) -> AsyncIterator[ChatGenerationChunk]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream("POST", RESPONSES_URL, json=payload, headers=headers) as response:
+            async with client.stream(
+                "POST", RESPONSES_URL, json=payload, headers=headers
+            ) as response:
                 if response.status_code >= 400:
                     body = (await response.aread()).decode("utf-8", "replace")
                     raise self._http_error(response.status_code, body)
