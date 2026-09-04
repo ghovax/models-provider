@@ -60,7 +60,7 @@ __all__ = [
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 MODELS_URL = "https://chatgpt.com/backend-api/codex/models"
-CLIENT_VERSION = "0.144.4"
+CLIENT_VERSION = "0.152.1"
 ORIGINATOR = "codex_cli_rs"
 
 RUN_PATH = "/agent.v1.AgentService/RunSSE"
