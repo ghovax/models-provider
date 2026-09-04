@@ -27,7 +27,12 @@ from pydantic import Field
 from websockets.asyncio.client import connect
 
 from .errors import AuthenticationError, ContextWindowError
-from .oauth_providers import ChatGPTTokens, request_chatgpt_headers, valid_chatgpt_tokens
+from .oauth_providers import (
+    ChatGPTTokens,
+    chatgpt_tokens,
+    request_chatgpt_headers,
+    valid_chatgpt_tokens,
+)
 from .subscriptions import RESPONSES_URL, cached_chatgpt_models, capture_usage_headers
 
 
@@ -541,7 +546,7 @@ class ChatGPTResponsesModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        tokens = self.credential_store.load("chatgpt") if self.credential_store else None
+        tokens = chatgpt_tokens(self.credential_store)
         if not isinstance(tokens, ChatGPTTokens) or tokens.is_expired():
             raise AuthenticationError("Not signed in to ChatGPT (or the session expired).")
         payload = self.build_payload(messages, stream=True, **kwargs)
