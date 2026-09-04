@@ -9,7 +9,7 @@ from .credentials import (
     current_credential_store,
     reset_credential_store,
 )
-from .errors import AuthenticationError
+from .errors import AuthenticationError, ContextWindowError
 from .oauth import (
     DeviceLoginFlow,
     HostedAuthorization,
@@ -67,11 +67,13 @@ from .subscriptions import (
 from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
 from .facade import Models
+from .chatgpt import ChatGPTResponsesModel
 
 __all__ = [
     "ApiKeyCredential",
     "ApiKeyResolution",
     "AuthenticationError",
+    "ContextWindowError",
     "AuthenticationStatus",
     "ChatGPTLoginFlow",
     "ChatGPTTokens",
@@ -109,6 +111,7 @@ __all__ = [
     "bind_credential_store",
     "current_credential_store",
     "Models",
+    "ChatGPTResponsesModel",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",

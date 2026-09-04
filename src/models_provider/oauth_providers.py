@@ -9,6 +9,7 @@ import hashlib
 import html
 import json
 import os
+import platform
 import time
 import urllib.parse
 import uuid
@@ -37,6 +38,8 @@ CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CHATGPT_SCOPES = ("openid", "profile", "email", "offline_access")
 CHATGPT_LOOPBACK_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CHATGPT_CLIENT_VERSION = "0.152.1"
+CHATGPT_ORIGINATOR = "codex_cli_rs"
 CHATGPT_OAUTH_CONFIGURATION = OAuthConfiguration(
     authorization_url=CHATGPT_AUTHORIZATION_URL,
     token_url=CHATGPT_TOKEN_URL,
@@ -471,13 +474,62 @@ class CursorAuthorizationRequest:
         raise AuthenticationError("Cursor sign-in is still pending.")
 
 
+def _terminal_user_agent() -> str:
+    program = os.environ.get("TERM_PROGRAM", "").strip()
+    version = os.environ.get("TERM_PROGRAM_VERSION", "").strip()
+    if program:
+        normalized = "".join(char.lower() for char in program if char not in " -_.")
+        names = {
+            "appleterminal": "Apple_Terminal",
+            "ghostty": "Ghostty",
+            "iterm": "iTerm.app",
+            "iterm2": "iTerm.app",
+            "itermapp": "iTerm.app",
+            "warp": "WarpTerminal",
+            "warpterminal": "WarpTerminal",
+            "vscode": "vscode",
+            "wezterm": "WezTerm",
+            "kitty": "kitty",
+            "alacritty": "Alacritty",
+            "konsole": "Konsole",
+            "gnometerminal": "gnome-terminal",
+            "vte": "VTE",
+            "windowsterminal": "WindowsTerminal",
+        }
+        name = names.get(normalized, program)
+        return f"{name}/{version}" if version else name
+    return os.environ.get("TERM", "").strip() or "unknown"
+
+
+def _chatgpt_user_agent() -> str:
+    if platform.system() == "Darwin":
+        operating_system = "Mac OS"
+        operating_system_version = platform.mac_ver()[0] or platform.release()
+    else:
+        operating_system = platform.system() or "unknown"
+        operating_system_version = platform.release() or "unknown"
+    architecture = platform.machine() or "unknown"
+    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", CHATGPT_ORIGINATOR)
+    return (
+        f"{originator}/{CHATGPT_CLIENT_VERSION} "
+        f"({operating_system} {operating_system_version}; {architecture}) "
+        f"{_terminal_user_agent()}"
+    )
+
+
 def request_chatgpt_headers(tokens: ChatGPTTokens, session_identifier: str = "") -> dict[str, str]:
     """Headers required by the ChatGPT subscription Responses endpoint."""
+    session_id = session_identifier or str(uuid.uuid4())
+    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", CHATGPT_ORIGINATOR)
     return {
         "Authorization": f"Bearer {tokens.access_token}",
-        "ChatGPT-Account-Id": tokens.account_id,
-        "originator": "codex_cli_rs",
-        "session-id": session_identifier or str(uuid.uuid4()),
+        "ChatGPT-Account-ID": tokens.account_id,
+        "originator": originator,
+        "User-Agent": _chatgpt_user_agent(),
+        "session-id": session_id,
+        "thread-id": session_id,
+        "x-client-request-id": session_id,
+        "x-codex-window-id": f"{session_id}:0",
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
