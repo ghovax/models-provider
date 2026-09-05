@@ -160,7 +160,7 @@ class LiteLLMChatModel(BaseChatModel):
                 )
             headers = opencode_headers(
                 context,
-                request_id=uuid4().hex,
+                request_id=context.request_id or uuid4().hex,
                 api_key=str(params.get("api_key") or ""),
                 overrides=headers,
             )

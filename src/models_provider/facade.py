@@ -126,9 +126,12 @@ class Models:
         from .litellm import LiteLLMChatModel, _SDK_PREFIXES
 
         is_opencode = provider_identifier.strip().lower().startswith("opencode")
+        litellm_prefix = _SDK_PREFIXES.get(provider.npm, "openai")
+        if is_opencode and provider.npm == "@ai-sdk/openai":
+            litellm_prefix = "openai/responses"
 
         model = LiteLLMChatModel(
-            model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
+            model=f"{litellm_prefix}/{record.model}",
             api_base=provider.api_base or None,
             temperature=temperature,
             top_p=opencode_top_p(record.model) if is_opencode else None,
