@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
+from .opencode import (
+    OPENCODE_GO_BASE_URL,
+    OPENCODE_ZEN_BASE_URL,
+    opencode_default_headers,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AuthenticationStatus:
@@ -145,15 +151,15 @@ _AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
     "opencode": ProviderAuthProfile(
         "opencode",
         environment_variables=("OPENCODE_API_KEY",),
-        default_base_url="https://opencode.ai/zen/v1",
-        headers={"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        default_base_url=OPENCODE_ZEN_BASE_URL,
+        headers=opencode_default_headers(),
         anonymous_api_key="public",
     ),
     "opencode-go": ProviderAuthProfile(
         "opencode-go",
         environment_variables=("OPENCODE_API_KEY",),
-        default_base_url="https://opencode.ai/zen/v1",
-        headers={"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        default_base_url=OPENCODE_GO_BASE_URL,
+        headers=opencode_default_headers(),
         anonymous_api_key="public",
         credential_identifier="opencode",
     ),

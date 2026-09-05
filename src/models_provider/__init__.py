@@ -68,6 +68,22 @@ from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
 from .facade import Models
 from .chatgpt import ChatGPTResponsesModel
+from .opencode import (
+    OPENCODE_CLIENT,
+    OPENCODE_GO_BASE_URL,
+    OPENCODE_MAX_OUTPUT_TOKENS,
+    OPENCODE_USER_AGENT,
+    OPENCODE_VERSION,
+    OPENCODE_ZEN_BASE_URL,
+    OpenCodeRequestContext,
+    opencode_default_headers,
+    opencode_body_options,
+    opencode_headers,
+    opencode_max_output_tokens,
+    opencode_payload,
+    opencode_temperature,
+    opencode_top_p,
+)
 
 __all__ = [
     "ApiKeyCredential",
@@ -112,6 +128,15 @@ __all__ = [
     "current_credential_store",
     "Models",
     "ChatGPTResponsesModel",
+    "OPENCODE_CLIENT",
+    "OPENCODE_GO_BASE_URL",
+    "OPENCODE_MAX_OUTPUT_TOKENS",
+    "OPENCODE_USER_AGENT",
+    "OPENCODE_VERSION",
+    "OPENCODE_ZEN_BASE_URL",
+    "OpenCodeRequestContext",
+    "opencode_default_headers",
+    "opencode_body_options",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",
@@ -134,4 +159,9 @@ __all__ = [
     "fetch_cursor_models",
     "get_usage_snapshot",
     "set_usage_snapshot",
+    "opencode_headers",
+    "opencode_max_output_tokens",
+    "opencode_payload",
+    "opencode_temperature",
+    "opencode_top_p",
 ]
