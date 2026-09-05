@@ -4,6 +4,7 @@ from .credentials import (
     ApiKeyCredential,
     CredentialStore,
     EnvironmentCredential,
+    FreebuffCredential,
     InMemoryCredentialStore,
     bind_credential_store,
     current_credential_store,
@@ -68,6 +69,7 @@ from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
 from .usage import UsageLedger, UsageSnapshot, UsageWindow
 from .facade import Models
 from .chatgpt import ChatGPTResponsesModel
+from .freebuff import FreebuffChatModel, FreebuffProtocolError
 
 __all__ = [
     "ApiKeyCredential",
@@ -88,6 +90,7 @@ __all__ = [
     "CursorTokens",
     "DeviceLoginFlow",
     "EnvironmentCredential",
+    "FreebuffCredential",
     "LoginFlow",
     "HostedAuthorization",
     "InMemoryCredentialStore",
@@ -112,6 +115,8 @@ __all__ = [
     "current_credential_store",
     "Models",
     "ChatGPTResponsesModel",
+    "FreebuffChatModel",
+    "FreebuffProtocolError",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",

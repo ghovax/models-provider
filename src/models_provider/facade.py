@@ -10,6 +10,7 @@ from langchain_core.language_models import BaseChatModel
 
 from .credentials import CredentialStore
 from .core import ModelCatalogue, ModelRecord
+from .freebuff import FreebuffChatModel, freebuff_model_records
 from .oauth import OAuthAuthorization
 from .provider_auth import ProviderAuthentication
 
@@ -87,10 +88,26 @@ class Models:
 
     def list(self, provider: str | None = None) -> tuple[ModelRecord, ...]:
         """Return the available catalogue records, optionally filtered by provider."""
-        return self._catalogue_snapshot().models(provider)
+        if provider is not None and provider.strip().lower() == "freebuff":
+            return freebuff_model_records()
+        records = self._catalogue_snapshot().models(provider)
+        if provider is None:
+            records = tuple(
+                sorted((*records, *freebuff_model_records()), key=lambda item: item.identifier)
+            )
+        return records
 
     def find(self, model_identifier: str) -> ModelRecord | None:
         """Find one provider-qualified model identifier."""
+        if model_identifier.strip().lower().startswith("freebuff/"):
+            return next(
+                (
+                    record
+                    for record in freebuff_model_records()
+                    if record.identifier == model_identifier.strip()
+                ),
+                None,
+            )
         return self._catalogue_snapshot().find(model_identifier)
 
     def chat(
@@ -102,10 +119,22 @@ class Models:
         timeout_seconds: float | None = 300.0,
     ) -> BaseChatModel:
         """Create a ready-to-use chat model from ``provider/model``."""
-        catalogue = self._catalogue_snapshot()
         if "/" not in model_identifier:
             raise ValueError("model_identifier must have the form 'provider/model'")
         provider_identifier, _model_suffix = model_identifier.split("/", 1)
+        if provider_identifier.strip().lower() == "freebuff":
+            record = self.find(model_identifier)
+            if record is None:
+                raise ValueError(f"model {model_identifier!r} is not in the Freebuff catalogue")
+            return FreebuffChatModel(
+                model=record.model,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                timeout=timeout_seconds,
+                context_length=record.context_length,
+                credential_store=self._credentials,
+            )
+        catalogue = self._catalogue_snapshot()
         record = catalogue.find(model_identifier)
         provider = catalogue.provider(provider_identifier)
         if record is None or provider is None:
