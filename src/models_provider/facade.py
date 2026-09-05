@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 import os
 from typing import Any
+from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
 
 from .credentials import CredentialStore
 from .core import ModelCatalogue, ModelRecord
 from .oauth import OAuthAuthorization
+from .opencode import OpenCodeRequestContext, opencode_max_output_tokens, opencode_top_p
 from .provider_auth import ProviderAuthentication
 
 
@@ -123,15 +125,21 @@ class Models:
             )
         from .litellm import LiteLLMChatModel, _SDK_PREFIXES
 
+        is_opencode = provider_identifier.strip().lower().startswith("opencode")
+
         model = LiteLLMChatModel(
             model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
             api_base=provider.api_base or None,
             temperature=temperature,
+            top_p=opencode_top_p(record.model) if is_opencode else None,
+            maximum_tokens=opencode_max_output_tokens(record.output_limit) if is_opencode else None,
+            supports_temperature=record.temperature if is_opencode else True,
             timeout=timeout_seconds,
             reasoning_effort=reasoning_effort,
             context_length=record.context_length,
             provider_identifier=provider.identifier,
             provider_environment_variables=provider.environment_variables,
+            request_context=OpenCodeRequestContext(session_id=uuid4().hex) if is_opencode else None,
         )
         model._authentication = self._authentication_service()
         return model

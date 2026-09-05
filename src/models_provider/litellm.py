@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
+from uuid import uuid4
 
 import litellm
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -14,6 +15,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
 from .errors import AuthenticationError
+from .opencode import OpenCodeRequestContext, opencode_headers
 from .provider_auth import ProviderAuthentication
 from .usage import ModelUsage
 
@@ -59,10 +61,14 @@ class LiteLLMChatModel(BaseChatModel):
     api_key: SecretStr | None = None
     api_base: str | None = None
     temperature: float = 0.0
+    top_p: float | None = None
+    maximum_tokens: int | None = None
+    supports_temperature: bool = True
     timeout: float | None = 300.0
     reasoning_effort: str | None = None
     context_length: int = 0
     default_headers: dict[str, str] = Field(default_factory=dict)
+    request_context: OpenCodeRequestContext | None = None
 
     provider_identifier: str = ""
     provider_environment_variables: tuple[str, ...] = ()
@@ -97,7 +103,10 @@ class LiteLLMChatModel(BaseChatModel):
         return item
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
-        params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
+        request_context = kwargs.pop("opencode_request_context", None)
+        params: dict[str, Any] = {"model": self.model}
+        if self.supports_temperature:
+            params["temperature"] = self.temperature
         resolved = None
         if self._authentication is not None and self.provider_identifier:
             resolved = self._authentication.resolve(
@@ -136,9 +145,25 @@ class LiteLLMChatModel(BaseChatModel):
             params["timeout"] = self.timeout
         if self.reasoning_effort:
             params["reasoning_effort"] = self.reasoning_effort
+        if self.top_p is not None:
+            params["top_p"] = self.top_p
+        if self.maximum_tokens is not None:
+            params["max_tokens"] = self.maximum_tokens
         headers = dict(self.default_headers)
         if resolved is not None:
             headers = {**resolved.headers, **headers}
+        if self.provider_identifier.lower().startswith("opencode"):
+            context = request_context or self.request_context
+            if context is None:
+                raise ValueError(
+                    "OpenCode models require an OpenCodeRequestContext at construction or call time"
+                )
+            headers = opencode_headers(
+                context,
+                request_id=uuid4().hex,
+                api_key=str(params.get("api_key") or ""),
+                overrides=headers,
+            )
         if headers:
             params["extra_headers"] = headers
         params.update({key: value for key, value in kwargs.items() if value is not None})
