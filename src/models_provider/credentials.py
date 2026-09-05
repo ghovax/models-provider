@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Mapping
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -59,6 +59,14 @@ class ApiKeyCredential:
     """An API key held by the application's credential store."""
 
     api_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class FreebuffCredential:
+    """An account token issued by Freebuff's official login flow."""
+
+    account_token: str = field(repr=False)
+    user_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

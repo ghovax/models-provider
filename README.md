@@ -95,6 +95,30 @@ restored_tokens = authentication.deserialize_token("chatgpt", payload)
 
 The host chooses where to persist the payload. Providers own their token shape, refresh behavior, and request headers.
 
+## Freebuff
+
+The Freebuff adapter follows the current public Freebuff client protocol: it
+uses an account token, admits a model-bound free session, starts the matching
+current `base3` agent run, sends the OpenAI-compatible chat request, streams
+the response, and finishes the run. It does not depend on `freebuff2api` or
+inject an identity marker into arbitrary prompts.
+
+```python
+from models_provider import FreebuffCredential, InMemoryCredentialStore, Models
+
+credentials = InMemoryCredentialStore(
+    {"freebuff": FreebuffCredential(account_token="<official-account-token>")}
+)
+models = Models(credentials=credentials)
+model = models.chat("freebuff/deepseek/deepseek-v4-flash")
+```
+
+The adapter requires the actual official Freebuff root-agent system prompt to
+already be present in the messages. Constructing or injecting that prompt for
+an external caller is intentionally unresolved in [issue #14](https://github.com/ghovax/models-provider/issues/14).
+The provider uses the source revision pinned in `freebuff.py`; unknown model or
+agent mappings fail closed rather than falling back to a stale proxy mapping.
+
 ## Model contract
 
 ```python
