@@ -98,7 +98,7 @@ class Models:
         model_identifier: str,
         *,
         temperature: float = 0.0,
-        reasoning_effort: str | None = "high",
+        reasoning_effort: str | None = None,
         timeout_seconds: float | None = 300.0,
     ) -> BaseChatModel:
         """Create a ready-to-use chat model from ``provider/model``."""
@@ -110,6 +110,7 @@ class Models:
         provider = catalogue.provider(provider_identifier)
         if record is None or provider is None:
             raise ValueError(f"model {model_identifier!r} is not in the models.dev catalogue")
+        reasoning_effort = record.validate_reasoning_effort(reasoning_effort)
         if provider_identifier == "chatgpt":
             from .chatgpt import ChatGPTResponsesModel
 

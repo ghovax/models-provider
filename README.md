@@ -101,12 +101,14 @@ The host chooses where to persist the payload. Providers own their token shape, 
 ModelProvider.chat(
     model_identifier="provider/model",
     temperature=0.0,
-    reasoning_effort="high",
+    reasoning_effort=None,
     timeout_seconds=300.0,
 ) -> BaseChatModel
 ```
 
 The model identifier is the only model-selection value callers need. Catalogue records, provider routing, authentication headers, refresh behavior, and usage normalization remain inside Models Provider.
+
+`reasoning_effort` is optional. When it is `None`, Models Provider leaves the provider/model default in control. An explicit value is passed through after validation against any effort values published by models.dev for that model.
 
 ## Ownership
 
