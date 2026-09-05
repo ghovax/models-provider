@@ -77,9 +77,11 @@ from .opencode import (
     OPENCODE_ZEN_BASE_URL,
     OpenCodeRequestContext,
     opencode_default_headers,
+    opencode_body_options,
     opencode_headers,
     opencode_max_output_tokens,
     opencode_payload,
+    opencode_temperature,
     opencode_top_p,
 )
 
@@ -134,6 +136,7 @@ __all__ = [
     "OPENCODE_ZEN_BASE_URL",
     "OpenCodeRequestContext",
     "opencode_default_headers",
+    "opencode_body_options",
     "reset_credential_store",
     "request_chatgpt_headers",
     "request_cursor_headers",
@@ -159,5 +162,6 @@ __all__ = [
     "opencode_headers",
     "opencode_max_output_tokens",
     "opencode_payload",
+    "opencode_temperature",
     "opencode_top_p",
 ]

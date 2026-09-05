@@ -92,6 +92,7 @@ def opencode_payload(
     tools: Sequence[Mapping[str, Any]] | None = None,
     tool_choice: Any = None,
     store: bool | None = None,
+    extra_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the OpenAI Chat body used by OpenCode's compatible provider."""
     payload: dict[str, Any] = {
@@ -99,6 +100,8 @@ def opencode_payload(
         "messages": list(messages),
         "stream": stream,
     }
+    if extra_options:
+        payload.update(dict(extra_options))
     optional = {
         "temperature": temperature,
         "top_p": top_p,
@@ -120,7 +123,37 @@ def opencode_payload(
 
 def opencode_top_p(model: str) -> float | None:
     """Return the model-specific sampling default used by OpenCode today."""
-    return 0.95 if "deepseek-v4-flash" in model.lower() else None
+    model = model.lower()
+    if "gemini-2.5" in model or "gemini-3-" in model:
+        return 0.95
+    if any(name in model for name in ("minimax-m2", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5")):
+        return 0.95
+    if "deepseek-v4-flash" in model:
+        return 0.95
+    return None
+
+
+def opencode_temperature(model: str) -> float | None:
+    """Return the model-specific temperature default used by OpenCode today."""
+    model = model.lower()
+    if "claude" in model:
+        return None
+    if "north-mini-code" in model:
+        return 1.0
+    if "gemini-2.5" in model or "gemini-3-" in model:
+        return 1.0
+    if "glm-4.6" in model or "glm-4.7" in model or "minimax-m2" in model:
+        return 1.0
+    if "kimi-k2" in model:
+        return 1.0 if any(name in model for name in ("thinking", "k2.", "k2p", "k2-5")) else 0.6
+    return None
+
+
+def opencode_body_options(provider: str, model: str) -> dict[str, Any]:
+    """Return the current provider-specific body options OpenCode adds."""
+    if provider.strip().lower() == "opencode" and model.lower() in {"kimi-k2-thinking", "glm-4.6"}:
+        return {"chat_template_args": {"enable_thinking": True}}
+    return {}
 
 
 def opencode_max_output_tokens(output_limit: int = 0) -> int:
@@ -142,5 +175,7 @@ __all__ = [
     "opencode_headers",
     "opencode_max_output_tokens",
     "opencode_payload",
+    "opencode_body_options",
+    "opencode_temperature",
     "opencode_top_p",
 ]

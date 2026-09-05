@@ -15,7 +15,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
 from .errors import AuthenticationError
-from .opencode import OpenCodeRequestContext, opencode_headers
+from .opencode import OpenCodeRequestContext, opencode_body_options, opencode_headers
 from .provider_auth import ProviderAuthentication
 from .usage import ModelUsage
 
@@ -164,6 +164,12 @@ class LiteLLMChatModel(BaseChatModel):
                 api_key=str(params.get("api_key") or ""),
                 overrides=headers,
             )
+            options = opencode_body_options(
+                self.provider_identifier,
+                self.model.rsplit("/", 1)[-1],
+            )
+            if options:
+                params["extra_body"] = {**params.get("extra_body", {}), **options}
         if headers:
             params["extra_headers"] = headers
         params.update({key: value for key, value in kwargs.items() if value is not None})
