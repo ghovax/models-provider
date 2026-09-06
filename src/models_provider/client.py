@@ -7,9 +7,9 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from .core import ModelCatalogue, ModelRecord
-from .oauth import OAuthAuthorization
-from .provider_runtime import ProviderRuntime
+from .catalogue import ModelCatalogue, ModelRecord
+from .auth import OAuthAuthorization
+from .providers import ProviderRegistry
 
 
 _MODELS_DEV_URL = "https://models.dev/api.json"
@@ -35,7 +35,7 @@ class Models:
 
     _provider_values: dict[str, Any]
     _catalogue: ModelCatalogue
-    _runtime: ProviderRuntime
+    _runtime: ProviderRegistry
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class Models:
             provider_values if isinstance(provider_values, dict) else dict(provider_values or {})
         )
         self._catalogue = _fetch_models(timeout_seconds=timeout_seconds)
-        self._runtime = ProviderRuntime(self._catalogue)
+        self._runtime = ProviderRegistry(self._catalogue)
 
     def list(self, provider: str | None = None) -> tuple[ModelRecord, ...]:
         """Return catalogue records; the catalogue itself remains private."""

@@ -36,6 +36,12 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _texts(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(text for text in (_text(item) for item in value) if text)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderRecord:
     """Provider metadata published by models.dev."""
@@ -106,10 +112,8 @@ class ModelRecord:
         modalities = modalities if isinstance(modalities, Mapping) else {}
         limits = limits if isinstance(limits, Mapping) else {}
         costs = costs if isinstance(costs, Mapping) else {}
-        input_modalities = tuple(_text(item) for item in modalities.get("input", ()) if _text(item))
-        output_modalities = tuple(
-            _text(item) for item in modalities.get("output", ()) if _text(item)
-        )
+        input_modalities = _texts(modalities.get("input"))
+        output_modalities = _texts(modalities.get("output"))
         model_id = _text(payload.get("id")) or model
         normalized_cost: dict[str, float] = {}
         for name, value in costs.items():
@@ -213,9 +217,7 @@ class ModelCatalogue:
                 identifier=identifier,
                 name=_text(raw_provider.get("name")) or identifier,
                 npm=_text(raw_provider.get("npm")),
-                environment_variables=tuple(
-                    _text(item) for item in raw_provider.get("env", ()) if _text(item)
-                ),
+                environment_variables=_texts(raw_provider.get("env")),
                 documentation_url=_text(raw_provider.get("doc")),
                 api_base=_text(raw_provider.get("api")),
                 extra=dict(raw_provider),
