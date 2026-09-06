@@ -233,7 +233,9 @@ class ModelProvider(Protocol):
     def chat(
         self,
         model_identifier: str,
+        *,
+        authorization: Any | None = None,
         **kwargs: Any,
     ) -> BaseChatModel:
-        """Create a model using the provider values supplied at initialization."""
+        """Create a model using the selected user's authorization and keyword options."""
         ...

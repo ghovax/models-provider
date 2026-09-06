@@ -91,8 +91,14 @@ class LoginFlow(Protocol):
 class OAuthAuthorization:
     """Host-facing OAuth authorization with a URL and explicit completion."""
 
-    def __init__(self, flow: LoginFlow) -> None:
+    def __init__(self, flow: LoginFlow, values: dict[str, Any]) -> None:
         self._flow = flow
+        self._values = values
+
+    @property
+    def values(self) -> dict[str, Any]:
+        """Return this authorization's provider values for model construction."""
+        return self._values
 
     @property
     def url(self) -> str:
