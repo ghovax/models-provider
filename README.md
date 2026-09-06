@@ -22,7 +22,7 @@ model = models.chat(
 answer = model.invoke("Explain spaced repetition in two sentences.")
 ```
 
-The catalogue is fetched lazily on the first lookup and cached internally. Applications do not load or construct a catalogue.
+`Models()` fetches the fixed models.dev catalogue once during initialization and caches it internally. Applications do not load or construct a catalogue.
 
 The model identifier describes the model publisher, not the authentication mechanism. The access implementation is selected internally from the provider and the supplied values. For example, `openai/gpt-5` remains the model identifier when the available access is an API key or an OpenAI account session.
 
@@ -48,26 +48,13 @@ OAuth values use the same dictionary. The host controls how the authorization UR
 models = Models()
 
 authorization = await models.sign_in("openai")
-print(authorization.url)
+# The host uses authorization.url to open the authorization page for the user.
 await authorization.complete()
 
 model = models.chat("openai/gpt-5", authorization=authorization)
 ```
 
-The login flow and token refresh are provider-owned. Each authorization is independent, so the same `Models` instance can serve multiple users:
-
-```python
-alice = await models.sign_in("openai")
-bob = await models.sign_in("openai")
-
-await alice.complete()
-await bob.complete()
-
-alice_model = models.chat("openai/gpt-5", authorization=alice)
-bob_model = models.chat("openai/gpt-5", authorization=bob)
-```
-
-The host decides whether and how to persist each user's authorization values.
+The login flow and token refresh are provider-owned. Each authorization is independent, so the same `Models` instance can serve different users. The host decides whether and how to persist a user's authorization values.
 
 ## Model contract
 
