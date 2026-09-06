@@ -1041,8 +1041,11 @@ def clear_usage_snapshot() -> None:
     _usage_snapshot = None
 
 
-def openai_oauth_adapter() -> OAuthProvider:
-    return OAuthAdapter(
+class OpenAI:
+    """Concrete OpenAI provider implementation."""
+
+    identifier = "openai"
+    oauth: OAuthProvider = OAuthAdapter(
         "openai",
         OPENAI_OAUTH_CONFIGURATION,
         flow_factory=OpenAIAccountLoginFlow,
@@ -1064,12 +1067,8 @@ def openai_oauth_adapter() -> OAuthProvider:
         token_deserializer=openai_account_tokens_from_mapping,
     )
 
-
-class OpenAI:
-    """Concrete OpenAI provider implementation."""
-
     def supports(self, record: ModelRecord) -> bool:
-        return record.provider == "openai"
+        return record.provider == self.identifier
 
     def chat(
         self,
@@ -1120,7 +1119,6 @@ __all__ = [
     "openai_account_tokens",
     "openai_account_tokens_from_mapping",
     "openai_account_tokens_to_mapping",
-    "openai_oauth_adapter",
     "request_openai_account_headers",
     "valid_openai_account_tokens",
     "fetch_openai_models",

@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
-from ..auth import ProviderAuthentication
+from ..auth import OAuthProvider, ProviderAuthentication
 from ..catalogue import ModelRecord, ProviderRecord
 from ..errors import AuthenticationError
 from ..usage import ModelUsage
@@ -215,6 +215,9 @@ class LiteLLMChatModel(BaseChatModel):
 
 class LiteLLM:
     """Concrete generic provider implementation backed by LiteLLM."""
+
+    identifier = "litellm"
+    oauth: OAuthProvider | None = None
 
     def supports(self, record: ModelRecord) -> bool:
         return True

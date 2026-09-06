@@ -510,15 +510,14 @@ class CursorOAuth:
         return request_cursor_headers(token, request_identifier or str(uuid.uuid4()))
 
 
-def cursor_oauth_adapter() -> OAuthProvider:
-    return CursorOAuth()
-
-
 class Cursor:
     """Concrete Cursor provider implementation."""
 
+    identifier = "cursor"
+    oauth: OAuthProvider = CursorOAuth()
+
     def supports(self, record: ModelRecord) -> bool:
-        return record.provider == "cursor"
+        return record.provider == self.identifier
 
     def chat(
         self,
@@ -548,7 +547,6 @@ __all__ = [
     "CursorLoginFlow",
     "CursorOAuth",
     "CursorTokens",
-    "cursor_oauth_adapter",
     "cursor_tokens",
     "cursor_tokens_from_mapping",
     "cursor_tokens_to_mapping",
