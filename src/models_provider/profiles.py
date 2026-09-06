@@ -70,7 +70,6 @@ _AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
         api_key_header="api-key",
         api_key_prefix="",
     ),
-    "chatgpt": ProviderAuthProfile("chatgpt", method="oauth"),
     "commandcode": ProviderAuthProfile(
         "commandcode",
         environment_variables=("COMMAND_CODE_API_KEY",),

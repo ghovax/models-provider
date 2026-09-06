@@ -125,6 +125,36 @@ class ModelRecord:
             extra=dict(payload),
         )
 
+    def supported_reasoning_efforts(self) -> tuple[str, ...]:
+        """Return the explicit reasoning-effort values published for this model."""
+        values: list[str] = []
+        for option in self.reasoning_options:
+            if _text(option.get("type")) != "effort":
+                continue
+            raw_values = option.get("values")
+            if not isinstance(raw_values, Sequence) or isinstance(
+                raw_values, (str, bytes, bytearray)
+            ):
+                continue
+            values.extend(value for value in (_text(item) for item in raw_values) if value)
+        return tuple(dict.fromkeys(values))
+
+    def validate_reasoning_effort(self, reasoning_effort: str | None) -> str | None:
+        """Validate a requested reasoning effort against catalogue metadata."""
+        if reasoning_effort is None:
+            return None
+        normalized = reasoning_effort.strip()
+        if not normalized:
+            raise ValueError("reasoning_effort must be a non-empty string or None")
+        supported = self.supported_reasoning_efforts()
+        if supported and normalized not in supported:
+            choices = ", ".join(supported)
+            raise ValueError(
+                f"reasoning_effort {reasoning_effort!r} is not supported for "
+                f"{self.identifier}; choose one of: {choices}"
+            )
+        return normalized
+
 
 class ModelCatalogue:
     """An immutable, searchable snapshot of models.dev provider/model data."""
@@ -182,6 +212,13 @@ class ModelCatalogue:
     def find(self, identifier: str) -> ModelRecord | None:
         return self._models.get(identifier.strip())
 
+    def require(self, identifier: str) -> ModelRecord:
+        """Return one model or raise a clear selection error."""
+        record = self.find(identifier)
+        if record is None:
+            raise ValueError(f"model {identifier!r} is not in the models.dev catalogue")
+        return record
+
     def provider(self, identifier: str) -> ProviderRecord | None:
         return self._providers.get(identifier.strip().lower())
 
@@ -191,15 +228,12 @@ class ModelCatalogue:
 
 @runtime_checkable
 class ModelProvider(Protocol):
-    """Creates chat models from provider-qualified identifiers."""
+    """Creates chat models from provider-qualified identifiers and keyword options."""
 
     def chat(
         self,
         model_identifier: str,
-        *,
-        temperature: float = 0.0,
-        reasoning_effort: str | None = "high",
-        timeout_seconds: float | None = 300.0,
+        **kwargs: Any,
     ) -> BaseChatModel:
-        """Create a chat model; credentials remain owned by the provider instance."""
+        """Create a model using the provider values supplied at initialization."""
         ...
