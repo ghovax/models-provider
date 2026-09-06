@@ -40,14 +40,14 @@ class Models:
 
     def __init__(
         self,
-        provider_values: Mapping[str, Any],
+        provider_values: Mapping[str, Any] | None = None,
         *,
         catalogue_url: str = _MODELS_DEV_URL,
         catalogue_timeout_seconds: float = 10.0,
         catalogue_client: Any | None = None,
     ) -> None:
         self._provider_values = (
-            provider_values if isinstance(provider_values, dict) else dict(provider_values)
+            provider_values if isinstance(provider_values, dict) else dict(provider_values or {})
         )
         self._catalogue: ModelCatalogue | None = None
         self._catalogue_url = catalogue_url

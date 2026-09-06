@@ -45,8 +45,7 @@ An uppercase environment-variable name is resolved from the process environment.
 OAuth values use the same dictionary. The host controls how the authorization URL is displayed:
 
 ```python
-values = {"openai": {}}
-models = Models(values)
+models = Models()
 
 authorization = await models.sign_in("openai")
 print(authorization.url)
