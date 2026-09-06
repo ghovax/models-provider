@@ -59,11 +59,7 @@ class ProviderRegistry:
     def sign_in(self, provider: str, values: dict[str, Any]) -> LoginFlow:
         provider = provider.strip().lower()
         implementation = next(
-            (
-                provider_impl
-                for provider_impl in self._providers
-                if provider_impl.identifier == provider
-            ),
+            (candidate for candidate in self._providers if candidate.identifier == provider),
             None,
         )
         if implementation is None or implementation.oauth is None:
