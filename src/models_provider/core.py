@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
@@ -70,11 +70,7 @@ class ModelRecord:
     context_length: int = 0
     input_limit: int = 0
     output_limit: int = 0
-    input_cost_per_million: float | None = None
-    output_cost_per_million: float | None = None
-    reasoning_cost_per_million: float | None = None
-    cache_read_cost_per_million: float | None = None
-    cache_write_cost_per_million: float | None = None
+    cost: Mapping[str, float | None] = field(default_factory=dict)
     release_date: str = ""
     last_updated: str = ""
     knowledge_cutoff: str = ""
@@ -84,60 +80,83 @@ class ModelRecord:
 
     @classmethod
     def from_payload(cls, provider: str, model: str, payload: Mapping[str, Any]) -> "ModelRecord":
-        modalities = payload.get("modalities") or {}
-        limits = payload.get("limit") or {}
-        costs = payload.get("cost") or {}
+        direct_fields = {
+            item.name
+            for item in fields(cls)
+            if item.name
+            not in {
+                "identifier",
+                "provider",
+                "model",
+                "name",
+                "input_modalities",
+                "output_modalities",
+                "context_length",
+                "input_limit",
+                "output_limit",
+                "cost",
+                "reasoning_options",
+                "extra",
+            }
+        }
+        values = {name: payload[name] for name in direct_fields if name in payload}
+        modalities = payload.get("modalities")
+        limits = payload.get("limit")
+        costs = payload.get("cost")
+        modalities = modalities if isinstance(modalities, Mapping) else {}
+        limits = limits if isinstance(limits, Mapping) else {}
+        costs = costs if isinstance(costs, Mapping) else {}
         input_modalities = tuple(_text(item) for item in modalities.get("input", ()) if _text(item))
         output_modalities = tuple(
             _text(item) for item in modalities.get("output", ()) if _text(item)
         )
         model_id = _text(payload.get("id")) or model
-        return cls(
-            identifier=f"{provider}/{model_id}",
-            provider=provider,
-            model=model_id,
-            name=_text(payload.get("name")) or model_id,
-            description=_text(payload.get("description")),
-            family=_text(payload.get("family")),
-            reasoning=bool(payload.get("reasoning")),
-            tool_call=bool(payload.get("tool_call")),
-            attachment=bool(payload.get("attachment")),
-            structured_output=bool(payload.get("structured_output")),
-            temperature=bool(payload.get("temperature")),
-            open_weights=bool(payload.get("open_weights")),
-            input_modalities=input_modalities,
-            output_modalities=output_modalities,
-            context_length=_positive_int(limits.get("context")),
-            input_limit=_positive_int(limits.get("input")),
-            output_limit=_positive_int(limits.get("output")),
-            input_cost_per_million=_number(costs.get("input")),
-            output_cost_per_million=_number(costs.get("output")),
-            reasoning_cost_per_million=_number(costs.get("reasoning")),
-            cache_read_cost_per_million=_number(costs.get("cache_read")),
-            cache_write_cost_per_million=_number(costs.get("cache_write")),
-            release_date=_text(payload.get("release_date")),
-            last_updated=_text(payload.get("last_updated")),
-            knowledge_cutoff=_text(payload.get("knowledge")),
-            status=_text(payload.get("status")),
-            reasoning_options=tuple(
-                item for item in payload.get("reasoning_options", ()) if isinstance(item, Mapping)
-            ),
-            extra=dict(payload),
+        normalized_cost: dict[str, float] = {}
+        for name, value in costs.items():
+            parsed = _number(value)
+            if parsed is not None:
+                normalized_cost[str(name)] = parsed
+        values.update(
+            {
+                "identifier": f"{provider}/{model_id}",
+                "provider": provider,
+                "model": model_id,
+                "name": _text(payload.get("name")) or model_id,
+                "input_modalities": input_modalities,
+                "output_modalities": output_modalities,
+                "context_length": _positive_int(limits.get("context")),
+                "input_limit": _positive_int(limits.get("input")),
+                "output_limit": _positive_int(limits.get("output")),
+                "cost": normalized_cost,
+                "reasoning_options": tuple(
+                    item
+                    for item in payload.get("reasoning_options", ())
+                    if isinstance(item, Mapping)
+                ),
+                "extra": dict(payload),
+            }
         )
-
-    def supported_reasoning_efforts(self) -> tuple[str, ...]:
-        """Return the explicit reasoning-effort values published for this model."""
-        values: list[str] = []
-        for option in self.reasoning_options:
-            if _text(option.get("type")) != "effort":
-                continue
-            raw_values = option.get("values")
-            if not isinstance(raw_values, Sequence) or isinstance(
-                raw_values, (str, bytes, bytearray)
-            ):
-                continue
-            values.extend(value for value in (_text(item) for item in raw_values) if value)
-        return tuple(dict.fromkeys(values))
+        for name in (
+            "description",
+            "family",
+            "release_date",
+            "last_updated",
+            "knowledge_cutoff",
+            "status",
+        ):
+            if name in values:
+                values[name] = _text(values[name])
+        for name in (
+            "reasoning",
+            "tool_call",
+            "attachment",
+            "structured_output",
+            "temperature",
+            "open_weights",
+        ):
+            if name in values:
+                values[name] = bool(values[name])
+        return cls(**values)
 
     def validate_reasoning_effort(self, reasoning_effort: str | None) -> str | None:
         """Validate a requested reasoning effort against catalogue metadata."""
@@ -146,7 +165,19 @@ class ModelRecord:
         normalized = reasoning_effort.strip()
         if not normalized:
             raise ValueError("reasoning_effort must be a non-empty string or None")
-        supported = self.supported_reasoning_efforts()
+        supported_values: list[str] = []
+        for option in self.reasoning_options:
+            if _text(option.get("type")) != "effort":
+                continue
+            raw_values = option.get("values")
+            if not isinstance(raw_values, Sequence) or isinstance(
+                raw_values, (str, bytes, bytearray)
+            ):
+                continue
+            supported_values.extend(
+                value for value in (_text(item) for item in raw_values) if value
+            )
+        supported = tuple(dict.fromkeys(supported_values))
         if supported and normalized not in supported:
             choices = ", ".join(supported)
             raise ValueError(
