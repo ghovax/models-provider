@@ -13,9 +13,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, SecretStr
 
-from .errors import AuthenticationError
-from .provider_auth import ProviderAuthentication
-from .usage import ModelUsage
+from ..auth import ProviderAuthentication
+from ..catalogue import ModelRecord, ProviderRecord
+from ..errors import AuthenticationError
+from ..usage import ModelUsage
 
 
 _SDK_PREFIXES = {
@@ -212,4 +213,39 @@ class LiteLLMChatModel(BaseChatModel):
         return self._response(response)
 
 
-__all__ = ["LiteLLMChatModel"]
+class LiteLLM:
+    """Concrete generic provider implementation backed by LiteLLM."""
+
+    def supports(self, record: ModelRecord) -> bool:
+        return True
+
+    def chat(
+        self,
+        record: ModelRecord,
+        provider: ProviderRecord,
+        *,
+        values: dict[str, Any],
+        authentication: ProviderAuthentication,
+        timeout_seconds: float | None,
+        request_parameters: Mapping[str, Any],
+    ) -> BaseChatModel:
+        resolution = authentication.resolve(
+            provider.identifier,
+            environment_variables=provider.environment_variables,
+        )
+        if not resolution.available:
+            raise AuthenticationError(f"No configured access is available for {record.provider!r}.")
+        model = LiteLLMChatModel(
+            model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
+            api_base=provider.api_base or None,
+            timeout=timeout_seconds,
+            context_length=record.context_length,
+            provider_identifier=provider.identifier,
+            provider_environment_variables=provider.environment_variables,
+            request_parameters=dict(request_parameters),
+        )
+        model._authentication = authentication
+        return model
+
+
+__all__ = ["LiteLLM", "LiteLLMChatModel"]
