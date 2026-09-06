@@ -53,7 +53,6 @@ class Models:
         self._catalogue_url = catalogue_url
         self._catalogue_timeout_seconds = catalogue_timeout_seconds
         self._catalogue_client = catalogue_client
-        self._authentication: ProviderAuthentication | None = None
 
     def _catalogue_snapshot(self) -> ModelCatalogue:
         if self._catalogue is None:
@@ -64,19 +63,15 @@ class Models:
             )
         return self._catalogue
 
-    def _authentication_service(self) -> ProviderAuthentication:
-        if self._authentication is None:
-            self._authentication = ProviderAuthentication(
-                self._provider_values,
-                catalogue=self._catalogue_snapshot(),
-            )
-        return self._authentication
+    def _authentication_service(self, values: dict[str, Any]) -> ProviderAuthentication:
+        return ProviderAuthentication(values, catalogue=self._catalogue_snapshot())
 
-    def _uses_openai_account_access(self, provider_identifier: str) -> bool:
+    @staticmethod
+    def _uses_openai_account_access(provider_identifier: str, values: Mapping[str, Any]) -> bool:
         """Select account access when the OpenAI value contains session data."""
         if provider_identifier != "openai":
             return False
-        value = self._provider_values.get("openai")
+        value = values.get("openai")
         if hasattr(value, "access_token"):
             return True
         if isinstance(value, Mapping):
@@ -91,7 +86,13 @@ class Models:
         """Find one provider-qualified model identifier."""
         return self._catalogue_snapshot().find(model_identifier)
 
-    def chat(self, model_identifier: str, **kwargs: Any) -> BaseChatModel:
+    def chat(
+        self,
+        model_identifier: str,
+        *,
+        authorization: OAuthAuthorization | Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> BaseChatModel:
         """Create a ready-to-use model from one provider-qualified identifier."""
         catalogue = self._catalogue_snapshot()
         if "/" not in model_identifier:
@@ -103,14 +104,21 @@ class Models:
         if provider is None:
             raise ValueError(f"provider {provider_identifier!r} is not in the models.dev catalogue")
 
+        values = (
+            authorization.values
+            if isinstance(authorization, OAuthAuthorization)
+            else self._provider_values
+            if authorization is None
+            else dict(authorization)
+        )
         parameters = dict(kwargs)
         reasoning_effort = parameters.get("reasoning_effort")
         if reasoning_effort is not None:
             parameters["reasoning_effort"] = record.validate_reasoning_effort(reasoning_effort)
         timeout_seconds = parameters.pop("timeout_seconds", 300.0)
-        authentication = self._authentication_service()
+        authentication = self._authentication_service(values)
 
-        if self._uses_openai_account_access(provider_identifier):
+        if self._uses_openai_account_access(provider_identifier, values):
             from .openai_account import OpenAIAccountResponsesModel
 
             authentication.token("openai")
@@ -118,7 +126,7 @@ class Models:
                 model=record.model,
                 timeout=timeout_seconds,
                 context_length=record.context_length,
-                credential_values=self._provider_values,
+                credential_values=values,
                 request_parameters=parameters,
             )
 
@@ -146,9 +154,10 @@ class Models:
 
     async def sign_in(self, provider: str) -> OAuthAuthorization:
         """Prepare OAuth and return its URL; the host decides how to display it."""
-        flow = self._authentication_service().flow(provider)
+        values: dict[str, Any] = {}
+        flow = self._authentication_service(values).flow(provider)
         await flow.start()
-        return OAuthAuthorization(flow)
+        return OAuthAuthorization(flow, values)
 
 
 __all__ = ["Models"]

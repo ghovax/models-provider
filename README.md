@@ -51,10 +51,23 @@ authorization = await models.sign_in("openai")
 print(authorization.url)
 await authorization.complete()
 
-model = models.chat("openai/gpt-5")
+model = models.chat("openai/gpt-5", authorization=authorization)
 ```
 
-The login flow and token refresh are provider-owned. Refreshed values live in the supplied dictionary for the lifetime of the process; the host decides whether and how to persist them.
+The login flow and token refresh are provider-owned. Each authorization is independent, so the same `Models` instance can serve multiple users:
+
+```python
+alice = await models.sign_in("openai")
+bob = await models.sign_in("openai")
+
+await alice.complete()
+await bob.complete()
+
+alice_model = models.chat("openai/gpt-5", authorization=alice)
+bob_model = models.chat("openai/gpt-5", authorization=bob)
+```
+
+The host decides whether and how to persist each user's authorization values.
 
 ## Model contract
 
