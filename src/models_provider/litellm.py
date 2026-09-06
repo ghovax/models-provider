@@ -58,11 +58,10 @@ class LiteLLMChatModel(BaseChatModel):
     model: str
     api_key: SecretStr | None = None
     api_base: str | None = None
-    temperature: float = 0.0
     timeout: float | None = 300.0
-    reasoning_effort: str | None = None
     context_length: int = 0
     default_headers: dict[str, str] = Field(default_factory=dict)
+    request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     provider_identifier: str = ""
     provider_environment_variables: tuple[str, ...] = ()
@@ -74,7 +73,7 @@ class LiteLLMChatModel(BaseChatModel):
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
-        return {"model": self.model, "api_base": self.api_base, "temperature": self.temperature}
+        return {"model": self.model, "api_base": self.api_base, **self.request_parameters}
 
     def context_window(self) -> int:
         return self.context_length
@@ -97,7 +96,7 @@ class LiteLLMChatModel(BaseChatModel):
         return item
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
-        params: dict[str, Any] = {"model": self.model, "temperature": self.temperature}
+        params: dict[str, Any] = {"model": self.model}
         resolved = None
         if self._authentication is not None and self.provider_identifier:
             resolved = self._authentication.resolve(
@@ -134,14 +133,18 @@ class LiteLLMChatModel(BaseChatModel):
             params["api_base"] = self.api_base
         if self.timeout is not None:
             params["timeout"] = self.timeout
-        if self.reasoning_effort:
-            params["reasoning_effort"] = self.reasoning_effort
         headers = dict(self.default_headers)
         if resolved is not None:
             headers = {**resolved.headers, **headers}
         if headers:
             params["extra_headers"] = headers
-        params.update({key: value for key, value in kwargs.items() if value is not None})
+        params.update(
+            {
+                key: value
+                for key, value in {**self.request_parameters, **kwargs}.items()
+                if value is not None
+            }
+        )
         return params
 
     def _response(self, response: Any) -> ChatResult:

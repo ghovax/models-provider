@@ -13,13 +13,12 @@ from typing import Any
 
 import httpx
 
-from .credentials import current_credential_store
 from .errors import AuthenticationError
 from .oauth_providers import (
     CursorTokens,
-    request_chatgpt_headers,
+    request_openai_account_headers,
     request_cursor_headers,
-    valid_chatgpt_tokens,
+    valid_openai_account_tokens,
     valid_cursor_tokens,
 )
 
@@ -39,20 +38,20 @@ __all__ = [
     "STATUS_RESOURCE_EXHAUSTED",
     "STATUS_UNAUTHENTICATED",
     "UNKNOWN_CONTEXT_WINDOW",
-    "cached_chatgpt_models",
+    "cached_openai_models",
     "cached_cursor_models",
     "capture_usage_headers",
-    "clear_chatgpt_models_cache",
+    "clear_openai_models_cache",
     "clear_cursor_models_cache",
     "clear_usage_snapshot",
     "display_cursor_account",
-    "fetch_chatgpt_models",
+    "fetch_openai_models",
     "fetch_cursor_models",
     "get_usage_snapshot",
     "machine_time_zone",
     "observed_context_window",
     "record_context_window",
-    "request_chatgpt_headers",
+    "request_openai_account_headers",
     "request_cursor_headers",
     "set_usage_snapshot",
     "USABLE_MODELS_URL",
@@ -76,7 +75,7 @@ STATUS_UNAUTHENTICATED = 16
 CLIENT_TYPE = "cli"
 UNKNOWN_CONTEXT_WINDOW = 200_000
 
-_chatgpt_models: dict[str, dict[str, Any]] = {}
+_openai_models: dict[str, dict[str, Any]] = {}
 _cursor_models: dict[str, dict[str, Any]] = {}
 _observed_windows: dict[str, int] = {}
 _usage_snapshot: dict[str, Any] | None = None
@@ -93,13 +92,15 @@ def _response_models(response: httpx.Response) -> list[Mapping[str, Any]]:
     return [entry for entry in models if isinstance(entry, Mapping)]
 
 
-async def fetch_chatgpt_models() -> dict[str, dict[str, Any]]:
-    if _chatgpt_models:
-        return deepcopy(_chatgpt_models)
+async def fetch_openai_models(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if _openai_models:
+        return deepcopy(_openai_models)
     try:
-        tokens = await valid_chatgpt_tokens()
+        tokens = await valid_openai_account_tokens(values)
         headers = {
-            key: value for key, value in request_chatgpt_headers(tokens).items() if key != "Accept"
+            key: value
+            for key, value in request_openai_account_headers(tokens).items()
+            if key != "Accept"
         }
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(
@@ -108,20 +109,20 @@ async def fetch_chatgpt_models() -> dict[str, dict[str, Any]]:
             response.raise_for_status()
             for entry in _response_models(response):
                 if entry.get("slug"):
-                    _chatgpt_models[str(entry["slug"])] = {
+                    _openai_models[str(entry["slug"])] = {
                         "name": entry.get("display_name") or entry["slug"],
                         "context": int(entry.get("context_window") or 0),
                     }
     except (AuthenticationError, httpx.HTTPError, ValueError, TypeError):
         return {}
-    return deepcopy(_chatgpt_models)
+    return deepcopy(_openai_models)
 
 
-async def fetch_cursor_models() -> dict[str, dict[str, Any]]:
+async def fetch_cursor_models(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if _cursor_models:
         return deepcopy(_cursor_models)
     try:
-        tokens = await valid_cursor_tokens()
+        tokens = await valid_cursor_tokens(values)
         headers = {
             **request_cursor_headers(tokens, str(uuid.uuid4())),
             "Content-Type": "application/json",
@@ -204,16 +205,16 @@ async def fetch_cursor_models() -> dict[str, dict[str, Any]]:
     return deepcopy(_cursor_models)
 
 
-def cached_chatgpt_models() -> dict[str, dict[str, Any]]:
-    return deepcopy(_chatgpt_models)
+def cached_openai_models() -> dict[str, dict[str, Any]]:
+    return deepcopy(_openai_models)
 
 
 def cached_cursor_models() -> dict[str, dict[str, Any]]:
     return deepcopy(_cursor_models)
 
 
-def clear_chatgpt_models_cache() -> None:
-    _chatgpt_models.clear()
+def clear_openai_models_cache() -> None:
+    _openai_models.clear()
 
 
 def clear_cursor_models_cache() -> None:
@@ -242,7 +243,7 @@ def observed_context_window(model_identifier: str) -> int:
     return _observed_windows.get(model_identifier, 0)
 
 
-async def display_cursor_account(tokens: CursorTokens) -> str:
+async def display_cursor_account(tokens: CursorTokens, values: dict[str, Any]) -> str:
     if tokens.account:
         return tokens.account
     try:
@@ -262,7 +263,7 @@ async def display_cursor_account(tokens: CursorTokens) -> str:
                 updated = CursorTokens(
                     tokens.access_token, tokens.refresh_token, value.strip(), tokens.expires_at
                 )
-                current_credential_store().save("cursor", updated)
+                values["cursor"] = updated
                 return value.strip()
     except (httpx.HTTPError, ValueError, TypeError):
         pass

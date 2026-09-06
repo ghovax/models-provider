@@ -1,15 +1,14 @@
-"""The concise application-facing model provider facade."""
+"""The application-facing model facade."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-import os
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from .credentials import CredentialStore
 from .core import ModelCatalogue, ModelRecord
+from .errors import AuthenticationError
 from .oauth import OAuthAuthorization
 from .provider_auth import ProviderAuthentication
 
@@ -37,35 +36,24 @@ def _fetch_models(*, url: str, timeout_seconds: float, client: Any | None) -> Mo
 
 
 class Models:
-    """Discover, authenticate, and create models without exposing catalogue machinery."""
+    """Select models using caller-provided provider values and hidden access resolution."""
 
     def __init__(
         self,
+        provider_values: Mapping[str, Any],
         *,
-        credentials: CredentialStore | None = None,
-        environment: Mapping[str, str] | None = None,
-        catalogue: ModelCatalogue | None = None,
         catalogue_url: str = _MODELS_DEV_URL,
         catalogue_timeout_seconds: float = 10.0,
         catalogue_client: Any | None = None,
     ) -> None:
-        self._credentials = credentials
-        self._environment = dict(environment or {})
-        self._catalogue = catalogue
+        self._provider_values = (
+            provider_values if isinstance(provider_values, dict) else dict(provider_values)
+        )
+        self._catalogue: ModelCatalogue | None = None
         self._catalogue_url = catalogue_url
         self._catalogue_timeout_seconds = catalogue_timeout_seconds
         self._catalogue_client = catalogue_client
         self._authentication: ProviderAuthentication | None = None
-
-    @classmethod
-    def from_environment(
-        cls,
-        *,
-        environment: Mapping[str, str] | None = None,
-        **kwargs: Any,
-    ) -> "Models":
-        """Build a model facade from an explicit snapshot of process variables."""
-        return cls(environment=dict(os.environ if environment is None else environment), **kwargs)
 
     def _catalogue_snapshot(self) -> ModelCatalogue:
         if self._catalogue is None:
@@ -79,72 +67,88 @@ class Models:
     def _authentication_service(self) -> ProviderAuthentication:
         if self._authentication is None:
             self._authentication = ProviderAuthentication(
+                self._provider_values,
                 catalogue=self._catalogue_snapshot(),
-                store=self._credentials,
-                environment=self._environment,
             )
         return self._authentication
 
+    def _uses_openai_account_access(self, provider_identifier: str) -> bool:
+        """Select account access when the OpenAI value contains session data."""
+        if provider_identifier != "openai":
+            return False
+        value = self._provider_values.get("openai")
+        if hasattr(value, "access_token"):
+            return True
+        if isinstance(value, Mapping):
+            return not value or "access_token" in value
+        return False
+
     def list(self, provider: str | None = None) -> tuple[ModelRecord, ...]:
-        """Return the available catalogue records, optionally filtered by provider."""
+        """Return catalogue records; the catalogue itself remains private."""
         return self._catalogue_snapshot().models(provider)
 
     def find(self, model_identifier: str) -> ModelRecord | None:
         """Find one provider-qualified model identifier."""
         return self._catalogue_snapshot().find(model_identifier)
 
-    def chat(
-        self,
-        model_identifier: str,
-        *,
-        temperature: float = 0.0,
-        reasoning_effort: str | None = "high",
-        timeout_seconds: float | None = 300.0,
-    ) -> BaseChatModel:
-        """Create a ready-to-use chat model from ``provider/model``."""
+    def chat(self, model_identifier: str, **kwargs: Any) -> BaseChatModel:
+        """Create a ready-to-use model from one provider-qualified identifier."""
         catalogue = self._catalogue_snapshot()
         if "/" not in model_identifier:
             raise ValueError("model_identifier must have the form 'provider/model'")
         provider_identifier, _model_suffix = model_identifier.split("/", 1)
-        record = catalogue.find(model_identifier)
+        provider_identifier = provider_identifier.strip().lower()
+        record = catalogue.require(model_identifier)
         provider = catalogue.provider(provider_identifier)
-        if record is None or provider is None:
-            raise ValueError(f"model {model_identifier!r} is not in the models.dev catalogue")
-        if provider_identifier == "chatgpt":
-            from .chatgpt import ChatGPTResponsesModel
+        if provider is None:
+            raise ValueError(f"provider {provider_identifier!r} is not in the models.dev catalogue")
 
-            return ChatGPTResponsesModel(
+        parameters = dict(kwargs)
+        reasoning_effort = parameters.get("reasoning_effort")
+        if reasoning_effort is not None:
+            parameters["reasoning_effort"] = record.validate_reasoning_effort(reasoning_effort)
+        timeout_seconds = parameters.pop("timeout_seconds", 300.0)
+        authentication = self._authentication_service()
+
+        if self._uses_openai_account_access(provider_identifier):
+            from .openai_account import OpenAIAccountResponsesModel
+
+            authentication.token("openai")
+            return OpenAIAccountResponsesModel(
                 model=record.model,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
                 timeout=timeout_seconds,
                 context_length=record.context_length,
-                credential_store=self._credentials,
+                credential_values=self._provider_values,
+                request_parameters=parameters,
             )
+
         from .litellm import LiteLLMChatModel, _SDK_PREFIXES
 
+        resolution = authentication.resolve(
+            provider.identifier,
+            environment_variables=provider.environment_variables,
+        )
+        if not resolution.available:
+            raise AuthenticationError(
+                f"No configured access is available for {provider_identifier!r}."
+            )
         model = LiteLLMChatModel(
             model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
             api_base=provider.api_base or None,
-            temperature=temperature,
             timeout=timeout_seconds,
-            reasoning_effort=reasoning_effort,
             context_length=record.context_length,
             provider_identifier=provider.identifier,
             provider_environment_variables=provider.environment_variables,
+            request_parameters=parameters,
         )
-        model._authentication = self._authentication_service()
+        model._authentication = authentication
         return model
 
     async def sign_in(self, provider: str) -> OAuthAuthorization:
-        """Prepare OAuth and return its URL; the host decides whether to display it."""
+        """Prepare OAuth and return its URL; the host decides how to display it."""
         flow = self._authentication_service().flow(provider)
         await flow.start()
         return OAuthAuthorization(flow)
-
-    def authentication(self) -> ProviderAuthentication:
-        """Return advanced authentication controls for hosts that need them."""
-        return self._authentication_service()
 
 
 __all__ = ["Models"]

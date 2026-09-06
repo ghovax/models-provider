@@ -1,126 +1,88 @@
 # Models Provider
 
-Models Provider gives applications one independent interface for discovering models, resolving credentials, creating chat models, and collecting usage. It uses the public [models.dev catalogue](https://models.dev) and has no dependency on any application library.
+Models Provider gives applications one interface for selecting models, resolving provider access, creating chat models, and collecting usage. Model metadata is loaded privately from the public [models.dev catalogue](https://models.dev).
 
 ## Public flow
+
+Pass provider values directly to `Models`, then select a provider-qualified model:
 
 ```python
 from models_provider import Models
 
-models = Models.from_environment()
+models = Models({
+    "openai": "OPENAI_API_KEY",
+})
 
 model = models.chat(
     "openai/gpt-4.1-mini",
-    temperature=0.0,
+    temperature=0.2,
+    top_p=0.9,
 )
 
 answer = model.invoke("Explain spaced repetition in two sentences.")
 ```
 
-`Models` loads the models.dev catalogue lazily on first use. Applications do not need to load or pass a catalogue explicitly.
+The catalogue is fetched lazily on the first lookup and cached internally. Applications do not load or construct a catalogue.
+
+The model identifier describes the model publisher, not the authentication mechanism. The access implementation is selected internally from the provider and the supplied values. For example, `openai/gpt-5` remains the model identifier when the available access is an API key or an OpenAI account session.
+
+## Provider values
+
+The constructor accepts one ordinary dictionary. Values can be literal credentials, environment-variable names, or provider-specific mappings:
 
 ```python
-models.list()
-models.list("openai")
-models.find("openai/gpt-4.1-mini")
+Models({"openai": "sk-proj-...7Qx2"})
 ```
-
-## Credentials
-
-`Models()` never reads process environment variables. Call `Models.from_environment()` when that is the intended credential source; it captures the environment explicitly at construction time. The library does not parse `.env` files; the host must load them before this call. When both are supplied, an explicit credential store takes precedence over that environment snapshot. OAuth tokens are stored and refreshed through the selected credential store.
 
 ```python
-from models_provider import ApiKeyCredential, CredentialStore, Models
-
-credentials = CredentialStore.from_mapping(
-    {
-        "openai": ApiKeyCredential("sk-proj-...7Qx2"),
-    }
-)
-
-models = Models(credentials=credentials)
-model = models.chat("openai/gpt-4.1-mini")
+Models({"openai": "OPENAI_API_KEY"})
 ```
 
-The credential interface is abstract. Embedding applications provide persistent implementations when required; stores hold `ApiKeyCredential`, `EnvironmentCredential`, or provider-specific OAuth token values:
-
-```python
-class CredentialStore(ABC):
-    def load(self, provider_identifier: str) -> object | None: ...
-    def save(self, provider_identifier: str, credentials: object) -> None: ...
-    def clear(self, provider_identifier: str) -> None: ...
-```
-
-`InMemoryCredentialStore` is a concrete store for short-lived applications and mock runs. It is not the credential abstraction.
+An uppercase environment-variable name is resolved from the process environment. Persistence is owned by the embedding application; Models Provider does not expose a credential-store abstraction or load credential files.
 
 ## OAuth
 
-```python
-authorization = await models.sign_in("chatgpt")
+OAuth values use the same dictionary. The host controls how the authorization URL is displayed:
 
+```python
+values = {"openai": {}}
+models = Models(values)
+
+authorization = await models.sign_in("openai")
 print(authorization.url)
-# The host decides whether to display, copy, or open the URL.
-
 await authorization.complete()
-model = models.chat("chatgpt/gpt-5")
+
+model = models.chat("openai/gpt-5")
 ```
 
-The library prepares the callback listener and returns the URL. It does not open a browser or make a user-interface decision.
-
-Hosts can ask the provider for the redirect URI registered for its OAuth client. The host must keep its `state` and `code_verifier` until the callback, validate the returned state, and then exchange the one-time code:
-
-```python
-from models_provider import ProviderAuthentication
-
-authentication = ProviderAuthentication()
-redirect_uri = authentication.redirect_uri("chatgpt")
-authorization = authentication.authorization_request(
-    "chatgpt",
-    redirect_uri,
-)
-print(authorization.authorize_url)
-
-# In the callback handler, after checking that the state matches:
-tokens = await authorization.exchange(code)
-```
-
-For ChatGPT, `redirect_uri` is the registered loopback URI `http://localhost:1455/auth/callback`. A host without a local listener can display the URL, let the browser return to localhost, and receive the copied one-time code through its own completion endpoint. Other providers may return a registered HTTPS callback instead.
-
-The host can serialize credentials before persisting them and deserialize them when restoring them:
-
-```python
-payload = authentication.serialize_token("chatgpt", tokens)
-restored_tokens = authentication.deserialize_token("chatgpt", payload)
-```
-
-The host chooses where to persist the payload. Providers own their token shape, refresh behavior, and request headers.
+The login flow and token refresh are provider-owned. Refreshed values live in the supplied dictionary for the lifetime of the process; the host decides whether and how to persist them.
 
 ## Model contract
 
 ```python
-ModelProvider.chat(
-    model_identifier="provider/model",
-    temperature=0.0,
+models.chat(
+    "provider/model",
+    temperature=0.2,
+    top_p=0.9,
     reasoning_effort="high",
-    timeout_seconds=300.0,
+    max_output_tokens=512,
 ) -> BaseChatModel
 ```
 
-The model identifier is the only model-selection value callers need. Catalogue records, provider routing, authentication headers, refresh behavior, and usage normalization remain inside Models Provider.
+Request settings are ordinary keyword arguments. The selected access implementation validates and translates them to its transport. There is no public options object and no provider-specific access class required from the caller.
 
 ## Ownership
 
 Models Provider owns:
 
-- the models.dev catalogue;
-- credential resolution and provider-specific authentication;
-- provider-specific clients, authentication headers, and refresh behavior;
+- the private models.dev catalogue and its built-in cache;
+- provider and model selection;
+- provider-specific authentication and transport;
+- request-option normalization;
 - usage normalization.
 
 The embedding application owns:
 
-- the credential store and its persistence policy;
-- sessions, tools, permissions, and files;
-- application workflows and domain behavior.
-
-Credentials remain in the store supplied by the embedding application; Models Provider does not choose a storage backend or write secret files by itself.
+- the provider-values dictionary;
+- credential persistence, if needed;
+- application workflows, sessions, tools, permissions, and files.

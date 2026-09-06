@@ -20,7 +20,6 @@ from typing import Any, Callable
 
 import httpx
 
-from .credentials import CredentialStore, current_credential_store
 from .errors import AuthenticationError
 from .oauth import (
     HostedAuthorization,
@@ -33,19 +32,19 @@ from .oauth import (
 )
 
 
-CHATGPT_AUTHORIZATION_URL = "https://auth.openai.com/oauth/authorize"
-CHATGPT_TOKEN_URL = "https://auth.openai.com/oauth/token"
-CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-CHATGPT_SCOPES = ("openid", "profile", "email", "offline_access")
-CHATGPT_LOOPBACK_REDIRECT_URI = "http://localhost:1455/auth/callback"
-CHATGPT_CLIENT_VERSION = "0.152.1"
-CHATGPT_ORIGINATOR = "codex_cli_rs"
-CHATGPT_OAUTH_CONFIGURATION = OAuthConfiguration(
-    authorization_url=CHATGPT_AUTHORIZATION_URL,
-    token_url=CHATGPT_TOKEN_URL,
-    client_id=CHATGPT_CLIENT_ID,
-    scopes=CHATGPT_SCOPES,
-    redirect_uri=CHATGPT_LOOPBACK_REDIRECT_URI,
+OPENAI_AUTHORIZATION_URL = "https://auth.openai.com/oauth/authorize"
+OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OPENAI_SCOPES = ("openid", "profile", "email", "offline_access")
+OPENAI_LOOPBACK_REDIRECT_URI = "http://localhost:1455/auth/callback"
+OPENAI_CLIENT_VERSION = "0.152.1"
+OPENAI_ORIGINATOR = "codex_cli_rs"
+OPENAI_OAUTH_CONFIGURATION = OAuthConfiguration(
+    authorization_url=OPENAI_AUTHORIZATION_URL,
+    token_url=OPENAI_TOKEN_URL,
+    client_id=OPENAI_CLIENT_ID,
+    scopes=OPENAI_SCOPES,
+    redirect_uri=OPENAI_LOOPBACK_REDIRECT_URI,
 )
 
 
@@ -63,8 +62,8 @@ def _jwt_claims(token: str) -> dict[str, Any]:
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class ChatGPTTokens(OAuthTokens):
-    """ChatGPT subscription credentials."""
+class OpenAIAccountTokens(OAuthTokens):
+    """OpenAI account subscription credentials."""
 
     id_token: str = ""
     account_id: str = ""
@@ -110,24 +109,24 @@ class CursorTokens(OAuthTokens):
         object.__setattr__(self, "account", account)
 
 
-_chatgpt_refresh_lock = asyncio.Lock()
+_openai_account_refresh_lock = asyncio.Lock()
 
 _cursor_refresh_lock = asyncio.Lock()
 
 
-def _chatgpt_from_payload(
-    payload: Mapping[str, Any], previous: ChatGPTTokens | None = None
-) -> ChatGPTTokens:
+def _openai_account_from_payload(
+    payload: Mapping[str, Any], previous: OpenAIAccountTokens | None = None
+) -> OpenAIAccountTokens:
     if not isinstance(payload, Mapping):
-        raise AuthenticationError("ChatGPT returned an invalid token response.")
+        raise AuthenticationError("OpenAI returned an invalid account token response.")
     access_token = str(payload.get("access_token") or "")
     if not access_token:
-        raise AuthenticationError("ChatGPT returned no access token.")
+        raise AuthenticationError("OpenAI returned no account access token.")
     id_token = str(payload.get("id_token") or (previous.id_token if previous else ""))
     claims = _jwt_claims(id_token)
     auth_claim = claims.get("https://api.openai.com/auth")
     account_id = auth_claim.get("chatgpt_account_id", "") if isinstance(auth_claim, dict) else ""
-    return ChatGPTTokens(
+    return OpenAIAccountTokens(
         access_token=access_token,
         refresh_token=str(
             payload.get("refresh_token") or (previous.refresh_token if previous else "")
@@ -159,12 +158,12 @@ def _cursor_from_payload(
     )
 
 
-def _save(provider: str, credentials: OAuthTokens, store: CredentialStore | None) -> None:
-    (store or current_credential_store()).save(provider, credentials)
+def _save(provider: str, credentials: OAuthTokens, values: dict[str, Any]) -> None:
+    values[provider] = credentials
 
 
-def chatgpt_tokens_to_mapping(tokens: ChatGPTTokens) -> dict[str, Any]:
-    """Return the provider-owned persisted representation of a ChatGPT session."""
+def openai_account_tokens_to_mapping(tokens: OpenAIAccountTokens) -> dict[str, Any]:
+    """Return the provider-owned persisted representation of an OpenAI account session."""
     return {
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
@@ -175,18 +174,20 @@ def chatgpt_tokens_to_mapping(tokens: ChatGPTTokens) -> dict[str, Any]:
     }
 
 
-def chatgpt_tokens_from_mapping(payload: Mapping[str, Any]) -> ChatGPTTokens:
-    """Rebuild a ChatGPT session from a previously persisted provider representation."""
+def openai_account_tokens_from_mapping(payload: Mapping[str, Any]) -> OpenAIAccountTokens:
+    """Rebuild an OpenAI account session from a persisted provider representation."""
     if not isinstance(payload, Mapping):
-        raise AuthenticationError("Stored ChatGPT credentials are invalid.")
+        raise AuthenticationError("Stored OpenAI account credentials are invalid.")
     access_token = str(payload.get("access_token") or "")
     if not access_token:
-        raise AuthenticationError("Stored ChatGPT credentials contain no access token.")
+        raise AuthenticationError("Stored OpenAI account credentials contain no access token.")
     try:
         expires_at = float(payload.get("expires_at") or 0.0)
     except (TypeError, ValueError) as error:
-        raise AuthenticationError("Stored ChatGPT credentials have an invalid expiry.") from error
-    return ChatGPTTokens(
+        raise AuthenticationError(
+            "Stored OpenAI account credentials have an invalid expiry."
+        ) from error
+    return OpenAIAccountTokens(
         access_token=access_token,
         refresh_token=str(payload.get("refresh_token") or ""),
         id_token=str(payload.get("id_token") or ""),
@@ -225,57 +226,69 @@ def cursor_tokens_from_mapping(payload: Mapping[str, Any]) -> CursorTokens:
     )
 
 
-def chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTTokens | None:
-    value = (store or current_credential_store()).load("chatgpt")
-    return value if isinstance(value, ChatGPTTokens) else None
+def openai_account_tokens(values: dict[str, Any]) -> OpenAIAccountTokens | None:
+    value = values.get("openai")
+    if isinstance(value, OpenAIAccountTokens):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return openai_account_tokens_from_mapping(value)
+        except AuthenticationError:
+            return None
+    return None
 
 
-def cursor_tokens(store: CredentialStore | None = None) -> CursorTokens | None:
-    value = (store or current_credential_store()).load("cursor")
-    return value if isinstance(value, CursorTokens) else None
+def cursor_tokens(values: dict[str, Any]) -> CursorTokens | None:
+    value = values.get("cursor")
+    if isinstance(value, CursorTokens):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return cursor_tokens_from_mapping(value)
+        except AuthenticationError:
+            return None
+    return None
 
 
-async def valid_chatgpt_tokens(store: CredentialStore | None = None) -> ChatGPTTokens:
-    selected_store = store or current_credential_store()
-    tokens = chatgpt_tokens(selected_store)
+async def valid_openai_account_tokens(values: dict[str, Any]) -> OpenAIAccountTokens:
+    tokens = openai_account_tokens(values)
     if tokens is None:
-        raise AuthenticationError("Not signed in to ChatGPT.")
+        raise AuthenticationError("Not signed in to OpenAI.")
     if not tokens.is_expired():
         return tokens
-    async with _chatgpt_refresh_lock:
-        current = chatgpt_tokens(selected_store) or tokens
+    async with _openai_account_refresh_lock:
+        current = openai_account_tokens(values) or tokens
         if not current.is_expired():
             return current
         if not current.refresh_token:
-            raise AuthenticationError("ChatGPT session expired; sign in again.")
+            raise AuthenticationError("OpenAI session expired; sign in again.")
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
-                    CHATGPT_TOKEN_URL,
+                    OPENAI_TOKEN_URL,
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": current.refresh_token,
-                        "client_id": CHATGPT_CLIENT_ID,
-                        "scope": " ".join(CHATGPT_SCOPES),
+                        "client_id": OPENAI_CLIENT_ID,
+                        "scope": " ".join(OPENAI_SCOPES),
                     },
                 )
                 response.raise_for_status()
-                refreshed = _chatgpt_from_payload(response.json(), current)
+                refreshed = _openai_account_from_payload(response.json(), current)
         except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
-            raise AuthenticationError(f"Could not refresh the ChatGPT session: {error}") from error
-        _save("chatgpt", refreshed, selected_store)
+            raise AuthenticationError(f"Could not refresh the OpenAI session: {error}") from error
+        _save("openai", refreshed, values)
         return refreshed
 
 
-async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTokens:
-    selected_store = store or current_credential_store()
-    tokens = cursor_tokens(selected_store)
+async def valid_cursor_tokens(values: dict[str, Any]) -> CursorTokens:
+    tokens = cursor_tokens(values)
     if tokens is None:
         raise AuthenticationError("Not signed in to Cursor.")
     if not tokens.is_expired():
         return tokens
     async with _cursor_refresh_lock:
-        current = cursor_tokens(selected_store) or tokens
+        current = cursor_tokens(values) or tokens
         if not current.is_expired():
             return current
         if not current.refresh_token:
@@ -291,19 +304,19 @@ async def valid_cursor_tokens(store: CredentialStore | None = None) -> CursorTok
                 refreshed = _cursor_from_payload(response.json(), current)
         except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
             raise AuthenticationError(f"Could not refresh the Cursor session: {error}") from error
-        _save("cursor", refreshed, selected_store)
+        _save("cursor", refreshed, values)
         return refreshed
 
 
-class ChatGPTLoginFlow:
+class OpenAIAccountLoginFlow:
     """PKCE loopback login. The host opens ``authorize_url`` and owns the browser policy."""
 
-    def __init__(self, store: CredentialStore | None = None) -> None:
-        self._store = store or current_credential_store()
+    def __init__(self, values: dict[str, Any]) -> None:
+        self._values = values
         self._authorization = OAuthAuthorizationRequest(
-            "chatgpt",
-            CHATGPT_OAUTH_CONFIGURATION,
-            token_parser=_chatgpt_from_payload,
+            "openai",
+            OPENAI_OAUTH_CONFIGURATION,
+            token_parser=_openai_account_from_payload,
         )
         self._server: HTTPServer | None = None
         self._captured: dict[str, str] = {}
@@ -338,22 +351,22 @@ class ChatGPTLoginFlow:
         self._server = HTTPServer(("127.0.0.1", 1455), CallbackHandler)
         self._server.timeout = 0.5
 
-    async def wait(self, timeout: float = 300.0) -> ChatGPTTokens:  # noqa: ASYNC109
+    async def wait(self, timeout: float = 300.0) -> OpenAIAccountTokens:  # noqa: ASYNC109
         if self._server is None:
             raise AuthenticationError("start() must be called before wait().")
         deadline = time.monotonic() + timeout
         try:
             while not self._captured:
                 if time.monotonic() >= deadline:
-                    raise AuthenticationError("ChatGPT sign-in timed out.")
+                    raise AuthenticationError("OpenAI sign-in timed out.")
                 await asyncio.to_thread(self._server.handle_request)
             if "code" not in self._captured:
-                raise AuthenticationError(self._captured.get("error", "ChatGPT sign-in failed."))
+                raise AuthenticationError(self._captured.get("error", "OpenAI sign-in failed."))
             tokens = await self._authorization.exchange(self._captured["code"])
-            _save("chatgpt", tokens, self._store)
+            _save("openai", tokens, self._values)
             return tokens
         except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
-            raise AuthenticationError(f"Could not complete ChatGPT sign-in: {error}") from error
+            raise AuthenticationError(f"Could not complete OpenAI sign-in: {error}") from error
         finally:
             await self.close()
 
@@ -366,8 +379,8 @@ class ChatGPTLoginFlow:
 class CursorLoginFlow:
     """Cursor's browser login and polling flow, with no daemon dependency."""
 
-    def __init__(self, store: CredentialStore | None = None) -> None:
-        self._store = store or current_credential_store()
+    def __init__(self, values: dict[str, Any]) -> None:
+        self._values = values
         self._verifier = _pkce_verifier()
         self._identifier = str(uuid.uuid4())
         self._cancelled = False
@@ -407,7 +420,7 @@ class CursorLoginFlow:
                     continue
                 response.raise_for_status()
                 tokens = _cursor_from_payload(response.json())
-                _save("cursor", tokens, self._store)
+                _save("cursor", tokens, self._values)
                 return tokens
             except httpx.HTTPError as error:
                 raise AuthenticationError(f"Cursor sign-in failed: {error}") from error
@@ -501,7 +514,7 @@ def _terminal_user_agent() -> str:
     return os.environ.get("TERM", "").strip() or "unknown"
 
 
-def _chatgpt_user_agent() -> str:
+def _openai_account_user_agent() -> str:
     if platform.system() == "Darwin":
         operating_system = "Mac OS"
         operating_system_version = platform.mac_ver()[0] or platform.release()
@@ -509,23 +522,25 @@ def _chatgpt_user_agent() -> str:
         operating_system = platform.system() or "unknown"
         operating_system_version = platform.release() or "unknown"
     architecture = platform.machine() or "unknown"
-    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", CHATGPT_ORIGINATOR)
+    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", OPENAI_ORIGINATOR)
     return (
-        f"{originator}/{CHATGPT_CLIENT_VERSION} "
+        f"{originator}/{OPENAI_CLIENT_VERSION} "
         f"({operating_system} {operating_system_version}; {architecture}) "
         f"{_terminal_user_agent()}"
     )
 
 
-def request_chatgpt_headers(tokens: ChatGPTTokens, session_identifier: str = "") -> dict[str, str]:
-    """Headers required by the ChatGPT subscription Responses endpoint."""
+def request_openai_account_headers(
+    tokens: OpenAIAccountTokens, session_identifier: str = ""
+) -> dict[str, str]:
+    """Headers required by the OpenAI account Responses endpoint."""
     session_id = session_identifier or str(uuid.uuid4())
-    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", CHATGPT_ORIGINATOR)
+    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", OPENAI_ORIGINATOR)
     return {
         "Authorization": f"Bearer {tokens.access_token}",
         "ChatGPT-Account-ID": tokens.account_id,
         "originator": originator,
-        "User-Agent": _chatgpt_user_agent(),
+        "User-Agent": _openai_account_user_agent(),
         "session-id": session_id,
         "thread-id": session_id,
         "x-client-request-id": session_id,
@@ -584,8 +599,8 @@ class _BuiltInOAuthAdapter:
 
     def __init__(
         self,
-        flow_factory: Callable[[CredentialStore], LoginFlow],
-        valid_token: Callable[[CredentialStore], Any],
+        flow_factory: Callable[[dict[str, Any]], LoginFlow],
+        valid_token: Callable[[dict[str, Any]], Any],
         header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]],
         authorization_factory: Callable[..., HostedAuthorization],
         token_serializer: Callable[[OAuthTokens], Mapping[str, Any]],
@@ -600,11 +615,11 @@ class _BuiltInOAuthAdapter:
         self._token_deserializer = token_deserializer
         self._registered_redirect_uri = registered_redirect_uri
 
-    def flow(self, store: CredentialStore) -> LoginFlow:
-        return self._flow_factory(store)
+    def flow(self, values: dict[str, Any]) -> LoginFlow:
+        return self._flow_factory(values)
 
-    async def valid_token(self, store: CredentialStore) -> OAuthTokens:
-        return await self._valid_token(store)
+    async def valid_token(self, values: dict[str, Any]) -> OAuthTokens:
+        return await self._valid_token(values)
 
     def redirect_uri(self) -> str:
         """Return the redirect URI accepted by the built-in OAuth client."""
@@ -639,20 +654,20 @@ class _BuiltInOAuthAdapter:
 
 def _default_oauth_adapters() -> dict[str, OAuthProvider]:
     return {
-        "chatgpt": _BuiltInOAuthAdapter(
-            ChatGPTLoginFlow,
-            valid_chatgpt_tokens,
-            lambda token, _request, session: request_chatgpt_headers(token, session),
+        "openai": _BuiltInOAuthAdapter(
+            OpenAIAccountLoginFlow,
+            valid_openai_account_tokens,
+            lambda token, _request, session: request_openai_account_headers(token, session),
             lambda redirect_uri, **kwargs: OAuthAuthorizationRequest(
-                "chatgpt",
-                CHATGPT_OAUTH_CONFIGURATION,
-                token_parser=_chatgpt_from_payload,
+                "openai",
+                OPENAI_OAUTH_CONFIGURATION,
+                token_parser=_openai_account_from_payload,
                 redirect_uri=redirect_uri,
                 **kwargs,
             ),
-            chatgpt_tokens_to_mapping,
-            chatgpt_tokens_from_mapping,
-            CHATGPT_LOOPBACK_REDIRECT_URI,
+            openai_account_tokens_to_mapping,
+            openai_account_tokens_from_mapping,
+            OPENAI_LOOPBACK_REDIRECT_URI,
         ),
         "cursor": _BuiltInOAuthAdapter(
             CursorLoginFlow,

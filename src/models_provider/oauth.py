@@ -16,7 +16,6 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx
 
-from .credentials import CredentialStore
 from .errors import AuthenticationError
 
 
@@ -129,7 +128,7 @@ class HostedAuthorization(Protocol):
 class OAuthProvider(Protocol):
     """An OAuth adapter used by :class:`ProviderAuthentication`."""
 
-    def flow(self, store: CredentialStore) -> LoginFlow: ...
+    def flow(self, values: dict[str, Any]) -> LoginFlow: ...
 
     def redirect_uri(self) -> str: ...
 
@@ -146,7 +145,7 @@ class OAuthProvider(Protocol):
 
     def deserialize_tokens(self, payload: Mapping[str, Any]) -> OAuthTokens: ...
 
-    async def valid_token(self, store: CredentialStore) -> OAuthTokens: ...
+    async def valid_token(self, values: dict[str, Any]) -> OAuthTokens: ...
 
     def request_headers(
         self, token: OAuthTokens, request_identifier: str, session_identifier: str
@@ -300,7 +299,7 @@ class OAuthLoginFlow:
         self,
         provider_identifier: str,
         configuration: OAuthConfiguration,
-        store: CredentialStore,
+        values: dict[str, Any],
         *,
         token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
     ) -> None:
@@ -308,7 +307,7 @@ class OAuthLoginFlow:
             raise ValueError("authorization_url is required for a browser OAuth flow")
         self.provider_identifier = provider_identifier.strip().lower()
         self.configuration = configuration
-        self._store = store
+        self._values = values
         self._token_parser = token_parser or _oauth_tokens_from_payload
         self._verifier = _pkce_verifier()
         self._state = secrets.token_urlsafe(24)
@@ -394,7 +393,7 @@ class OAuthLoginFlow:
             }
             response = await self._token_request(data)
             tokens = self._token_parser(response, None)
-            self._store.save(self.provider_identifier, tokens)
+            self._values[self.provider_identifier] = tokens
             return tokens
         finally:
             await self.close()
@@ -428,7 +427,7 @@ class DeviceLoginFlow:
         self,
         provider_identifier: str,
         configuration: OAuthConfiguration,
-        store: CredentialStore,
+        values: dict[str, Any],
         *,
         token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
     ) -> None:
@@ -436,7 +435,7 @@ class DeviceLoginFlow:
             raise ValueError("device_authorization_url is required for a device flow")
         self.provider_identifier = provider_identifier.strip().lower()
         self.configuration = configuration
-        self._store = store
+        self._values = values
         self._token_parser = token_parser or _oauth_tokens_from_payload
         self._device_code = ""
         self._verification_url = ""
@@ -506,7 +505,7 @@ class DeviceLoginFlow:
                             "OAuth returned an invalid device token response."
                         )
                     tokens = self._token_parser(payload, None)
-                    self._store.save(self.provider_identifier, tokens)
+                    self._values[self.provider_identifier] = tokens
                     return tokens
                 try:
                     error_payload = response.json()
@@ -539,7 +538,7 @@ class OAuthAdapter:
         provider_identifier: str,
         configuration: OAuthConfiguration,
         *,
-        flow_factory: Callable[[CredentialStore], LoginFlow] | None = None,
+        flow_factory: Callable[[dict[str, Any]], LoginFlow] | None = None,
         token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
         header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]] | None = None,
         authorization_factory: Callable[..., HostedAuthorization] | None = None,
@@ -556,7 +555,7 @@ class OAuthAdapter:
         self._token_deserializer = token_deserializer or _oauth_tokens_from_mapping
         self._refresh_lock = asyncio.Lock()
 
-    def flow(self, store: CredentialStore) -> LoginFlow:
+    def flow(self, values: dict[str, Any]) -> LoginFlow:
         if (
             not self.configuration.authorization_url
             and not self.configuration.device_authorization_url
@@ -565,14 +564,14 @@ class OAuthAdapter:
                 f"{self.provider_identifier!r} has no interactive OAuth flow."
             )
         if self._flow_factory is not None:
-            return self._flow_factory(store)
+            return self._flow_factory(values)
         flow_type = (
             DeviceLoginFlow if self.configuration.device_authorization_url else OAuthLoginFlow
         )
         return flow_type(
             self.provider_identifier,
             self.configuration,
-            store,
+            values,
             token_parser=self._token_parser,
         )
 
@@ -615,14 +614,14 @@ class OAuthAdapter:
     def deserialize_tokens(self, payload: Mapping[str, Any]) -> OAuthTokens:
         return self._token_deserializer(payload)
 
-    async def valid_token(self, store: CredentialStore) -> OAuthTokens:
-        tokens = store.load(self.provider_identifier)
+    async def valid_token(self, values: dict[str, Any]) -> OAuthTokens:
+        tokens = self._stored_tokens(values.get(self.provider_identifier))
         if self.configuration.grant_type == "client_credentials":
-            if isinstance(tokens, OAuthTokens) and not tokens.is_expired():
+            if tokens is not None and not tokens.is_expired():
                 return tokens
             async with self._refresh_lock:
-                current = store.load(self.provider_identifier)
-                if isinstance(current, OAuthTokens) and not current.is_expired():
+                current = self._stored_tokens(values.get(self.provider_identifier))
+                if current is not None and not current.is_expired():
                     return current
                 try:
                     payload = await self._request_token(
@@ -636,20 +635,18 @@ class OAuthAdapter:
                     raise AuthenticationError(
                         f"Could not obtain the {self.provider_identifier} access token: {error}"
                     ) from error
-                refreshed = self._token_parser(
-                    payload, current if isinstance(current, OAuthTokens) else None
-                )
-                store.save(self.provider_identifier, refreshed)
+                refreshed = self._token_parser(payload, current)
+                values[self.provider_identifier] = dict(self._token_serializer(refreshed))
                 return refreshed
-        if not isinstance(tokens, OAuthTokens):
+        if tokens is None:
             raise AuthenticationError(f"Not signed in to {self.provider_identifier}.")
         if not tokens.is_expired():
             return tokens
         async with self._refresh_lock:
-            current = store.load(self.provider_identifier)
-            if isinstance(current, OAuthTokens) and not current.is_expired():
+            current = self._stored_tokens(values.get(self.provider_identifier))
+            if current is not None and not current.is_expired():
                 return current
-            current = current if isinstance(current, OAuthTokens) else tokens
+            current = current or tokens
             if not current.refresh_token:
                 raise AuthenticationError(
                     f"{self.provider_identifier} session expired; sign in again."
@@ -673,8 +670,18 @@ class OAuthAdapter:
                 raise AuthenticationError(
                     f"Could not refresh the {self.provider_identifier} session: {error}"
                 ) from error
-            store.save(self.provider_identifier, refreshed)
+            values[self.provider_identifier] = dict(self._token_serializer(refreshed))
             return refreshed
+
+    def _stored_tokens(self, value: Any) -> OAuthTokens | None:
+        if isinstance(value, OAuthTokens):
+            return value
+        if isinstance(value, Mapping):
+            try:
+                return self._token_deserializer(value)
+            except (AuthenticationError, TypeError, ValueError):
+                return None
+        return None
 
     async def _request_token(
         self, data: Mapping[str, str], *, auth: tuple[str, str] | None = None

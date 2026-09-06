@@ -1,4 +1,4 @@
-"""ChatGPT subscription model transport for the Codex Responses backend."""
+"""OpenAI account subscription model transport for the Codex Responses backend."""
 
 from __future__ import annotations
 
@@ -28,12 +28,12 @@ from websockets.asyncio.client import connect
 
 from .errors import AuthenticationError, ContextWindowError
 from .oauth_providers import (
-    ChatGPTTokens,
-    chatgpt_tokens,
-    request_chatgpt_headers,
-    valid_chatgpt_tokens,
+    OpenAIAccountTokens,
+    openai_account_tokens,
+    request_openai_account_headers,
+    valid_openai_account_tokens,
 )
-from .subscriptions import RESPONSES_URL, cached_chatgpt_models, capture_usage_headers
+from .subscriptions import RESPONSES_URL, cached_openai_models, capture_usage_headers
 
 
 CONTEXT_OVERFLOW_CODES = frozenset(
@@ -75,29 +75,28 @@ def _reasoning_items(message: BaseMessage, model: str) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
-class ChatGPTResponsesModel(BaseChatModel):
-    """A LangChain model backed by the ChatGPT subscription Codex Responses endpoint."""
+class OpenAIAccountResponsesModel(BaseChatModel):
+    """A model backed by the OpenAI account subscription Codex Responses endpoint."""
 
     model: str
-    reasoning_effort: str | None = None
-    temperature: float = 0.0
     context_length: int = 0
     session_id: str = ""
     timeout: float | None = 300.0
-    credential_store: Any = Field(default=None, exclude=True)
+    credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
     @property
     def _llm_type(self) -> str:
-        return "chatgpt-responses"
+        return "openai-account-responses"
 
     def context_window(self) -> int:
-        live = cached_chatgpt_models().get(self.model)
+        live = cached_openai_models().get(self.model)
         live_context = int(live.get("context") or 0) if isinstance(live, Mapping) else 0
         return max(live_context, max(0, int(self.context_length or 0)))
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
-        return {"model": self.model, "reasoning_effort": self.reasoning_effort}
+        return {"model": self.model, **self.request_parameters}
 
     def bind_tools(
         self,
@@ -119,21 +118,39 @@ class ChatGPTResponsesModel(BaseChatModel):
         self, messages: Sequence[BaseMessage], *, stream: bool, **kwargs: Any
     ) -> dict[str, Any]:
         instructions, input_items = self._to_responses_input(messages)
+        parameters = {**self.request_parameters, **kwargs}
         payload: dict[str, Any] = {
             "model": self.model,
             "input": input_items,
             "store": False,
             "stream": stream,
-            "parallel_tool_calls": kwargs.get("parallel_tool_calls", True),
-            "tool_choice": kwargs.get("tool_choice") or "auto",
-            "reasoning": {"effort": self.reasoning_effort or None, "summary": "auto"},
+            "parallel_tool_calls": parameters.get("parallel_tool_calls", True),
+            "tool_choice": parameters.get("tool_choice") or "auto",
+            "reasoning": {
+                "effort": parameters.get("reasoning_effort"),
+                "summary": "auto",
+            },
             "include": ["reasoning.encrypted_content"],
         }
         if instructions:
             payload["instructions"] = instructions
-        tools = kwargs.get("tools")
+        tools = parameters.get("tools")
         if tools:
             payload["tools"] = [self.responses_tool(tool) for tool in tools]
+        for key in (
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "top_logprobs",
+            "metadata",
+            "prompt_cache_key",
+            "service_tier",
+            "text",
+            "truncation",
+        ):
+            value = parameters.get(key)
+            if value is not None:
+                payload[key] = value
         if self.session_id:
             payload["client_metadata"] = {
                 "session_id": self.session_id,
@@ -217,8 +234,8 @@ class ChatGPTResponsesModel(BaseChatModel):
         }
 
     async def _headers(self) -> dict[str, str]:
-        return request_chatgpt_headers(
-            await valid_chatgpt_tokens(self.credential_store), self.session_id
+        return request_openai_account_headers(
+            await valid_openai_account_tokens(self.credential_values), self.session_id
         )
 
     @staticmethod
@@ -234,7 +251,7 @@ class ChatGPTResponsesModel(BaseChatModel):
     @staticmethod
     def _http_error(status: int, body: str) -> Exception:
         if status in (401, 403):
-            return AuthenticationError(f"ChatGPT rejected the subscription token: {body[:800]}")
+            return AuthenticationError(f"OpenAI rejected the account token: {body[:800]}")
         try:
             data = json.loads(body)
         except (TypeError, ValueError):
@@ -246,7 +263,7 @@ class ChatGPTResponsesModel(BaseChatModel):
                 "The request exceeded this model's context window.",
                 model="",
             )
-        return RuntimeError(f"ChatGPT Codex endpoint returned {status}: {body[:800]}")
+        return RuntimeError(f"OpenAI account endpoint returned {status}: {body[:800]}")
 
     @classmethod
     def _translate_event(
@@ -315,7 +332,7 @@ class ChatGPTResponsesModel(BaseChatModel):
                     model=str(state.get("model") or ""),
                     context_window=int(state.get("context_window") or 0),
                 )
-            raise RuntimeError(f"ChatGPT Codex stream failed: {message}")
+            raise RuntimeError(f"OpenAI account stream failed: {message}")
         return None
 
     @staticmethod
@@ -439,7 +456,7 @@ class ChatGPTResponsesModel(BaseChatModel):
                     yield chunk
                 if data.get("type") == "response.completed":
                     return
-            raise RuntimeError("ChatGPT Codex websocket closed before response.completed")
+            raise RuntimeError("OpenAI account websocket closed before response.completed")
         finally:
             await websocket.__aexit__(None, None, None)
 
@@ -546,11 +563,11 @@ class ChatGPTResponsesModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        tokens = chatgpt_tokens(self.credential_store)
-        if not isinstance(tokens, ChatGPTTokens) or tokens.is_expired():
-            raise AuthenticationError("Not signed in to ChatGPT (or the session expired).")
+        tokens = openai_account_tokens(self.credential_values)
+        if not isinstance(tokens, OpenAIAccountTokens) or tokens.is_expired():
+            raise AuthenticationError("Not signed in to OpenAI (or the session expired).")
         payload = self.build_payload(messages, stream=True, **kwargs)
-        headers = request_chatgpt_headers(tokens, self.session_id)
+        headers = request_openai_account_headers(tokens, self.session_id)
         chunks: list[AIMessageChunk] = []
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", RESPONSES_URL, json=payload, headers=headers) as response:
@@ -580,4 +597,4 @@ class ChatGPTResponsesModel(BaseChatModel):
         return self._chunks_to_result(chunks)
 
 
-__all__ = ["ChatGPTResponsesModel"]
+__all__ = ["OpenAIAccountResponsesModel"]
