@@ -7,15 +7,19 @@ from typing import Any, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
-from ..auth import ProviderAuthentication
+from ..auth import LoginFlow, OAuthProvider, ProviderAuthentication
 from ..catalogue import ModelCatalogue, ModelRecord, ProviderRecord
-from ..auth import LoginFlow, OAuthProvider
-from .cursor import Cursor, cursor_oauth_adapter
+from .cursor import Cursor
 from .litellm import LiteLLM
-from .openai import OpenAI, openai_oauth_adapter
+from .openai import OpenAI
 
 
 class Provider(Protocol):
+    identifier: str
+
+    @property
+    def oauth(self) -> OAuthProvider | None: ...
+
     def supports(self, record: ModelRecord) -> bool: ...
 
     def chat(
@@ -33,19 +37,38 @@ class Provider(Protocol):
 class ProviderRegistry:
     """Resolve concrete providers behind the public ``Models`` client."""
 
+    _catalogue: ModelCatalogue
+    _providers: tuple[Provider, ...]
+
     def __init__(self, catalogue: ModelCatalogue) -> None:
         self._catalogue = catalogue
         self._providers: tuple[Provider, ...] = (OpenAI(), Cursor(), LiteLLM())
 
     def authentication(self, values: dict[str, Any]) -> ProviderAuthentication:
+        oauth_adapters = {
+            provider.identifier: provider.oauth
+            for provider in self._providers
+            if provider.oauth is not None
+        }
         return ProviderAuthentication(
             values,
             catalogue=self._catalogue,
-            oauth_adapters=default_oauth_adapters(),
+            oauth_adapters=oauth_adapters,
         )
 
     def sign_in(self, provider: str, values: dict[str, Any]) -> LoginFlow:
-        return self.authentication(values).flow(provider)
+        provider = provider.strip().lower()
+        implementation = next(
+            (
+                provider_impl
+                for provider_impl in self._providers
+                if provider_impl.identifier == provider
+            ),
+            None,
+        )
+        if implementation is None or implementation.oauth is None:
+            raise ValueError(f"Provider {provider!r} does not support OAuth.")
+        return implementation.oauth.flow(values)
 
     def chat(
         self,
@@ -72,11 +95,4 @@ class ProviderRegistry:
         raise ValueError(f"No provider implementation supports {record.provider!r}.")
 
 
-def default_oauth_adapters() -> dict[str, OAuthProvider]:
-    return {
-        "openai": openai_oauth_adapter(),
-        "cursor": cursor_oauth_adapter(),
-    }
-
-
-__all__ = ["Provider", "ProviderRegistry", "default_oauth_adapters"]
+__all__ = ["Provider", "ProviderRegistry"]
