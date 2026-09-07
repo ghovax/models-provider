@@ -14,7 +14,7 @@ import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Callable, Protocol, cast, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx
 
@@ -436,7 +436,6 @@ class DeviceLoginFlow:
             payload = response.json()
         if not isinstance(payload, Mapping) or not payload.get("device_code"):
             raise AuthenticationError("OAuth returned an invalid device authorization response.")
-        payload = cast(Mapping[str, Any], payload)
         self._device_code = str(payload["device_code"])
         self._verification_url = str(
             payload.get("verification_uri_complete")
@@ -444,9 +443,17 @@ class DeviceLoginFlow:
             or payload.get("verification_url")
             or ""
         )
+        interval_value = payload.get("interval")
+        expires_value = payload.get("expires_in")
         try:
-            self._interval = max(1.0, float(payload.get("interval") or 5.0))
-            expires_in = max(1.0, float(payload.get("expires_in") or 600.0))
+            self._interval = max(
+                1.0,
+                float(interval_value) if isinstance(interval_value, (int, float, str)) else 5.0,
+            )
+            expires_in = max(
+                1.0,
+                float(expires_value) if isinstance(expires_value, (int, float, str)) else 600.0,
+            )
         except (TypeError, ValueError) as error:
             raise AuthenticationError("OAuth returned invalid device timing values.") from error
         self._expires_at = time.monotonic() + expires_in

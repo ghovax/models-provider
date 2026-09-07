@@ -70,6 +70,20 @@ models.chat(
 
 Request settings are ordinary keyword arguments. The selected access implementation validates and translates them to its transport. There is no public options object and no provider-specific access class required from the caller.
 
+## Usage values
+
+Normalized usage is grouped by measurement type:
+
+```python
+usage.tokens.input_tokens
+usage.tokens.reasoning_tokens
+usage.cache.cache_read_tokens
+usage.audio.output_audio_tokens
+usage.cost.cost_usd
+```
+
+`UsageLedger` owns accumulation when an application records multiple responses.
+
 ## Ownership
 
 Models Provider owns:

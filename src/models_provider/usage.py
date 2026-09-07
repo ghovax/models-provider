@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 __all__ = [
     "AudioUsage",
@@ -20,15 +20,72 @@ __all__ = [
 ]
 
 
-def _integer(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+class _TokenPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    input_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("input_tokens", "prompt_tokens")
+    )
+    output_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("output_tokens", "completion_tokens")
+    )
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+class _CachePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cache_read_tokens: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("cache_read_tokens", "cached_tokens", "cache_read"),
+    )
+    cache_write_tokens: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("cache_write_tokens", "cache_creation", "cache_write"),
+    )
+
+
+class _AudioPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    input_audio_tokens: int | None = None
+    output_audio_tokens: int | None = None
+
+
+class _CostPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cost_usd: float | None = Field(default=None, validation_alias=AliasChoices("cost_usd", "usd"))
+
+
+class _UsagePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tokens: _TokenPayload | None = None
+    cache: _CachePayload | None = None
+    audio: _AudioPayload | None = None
+    cost: _CostPayload | float | None = None
+    input_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("input_tokens", "prompt_tokens")
+    )
+    output_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("output_tokens", "completion_tokens")
+    )
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cache_read_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("cache_read_tokens", "cached_tokens")
+    )
+    cache_write_tokens: int | None = None
+    input_audio_tokens: int | None = None
+    output_audio_tokens: int | None = None
+    cost_usd: float | None = None
+    output_token_details: _TokenPayload | None = None
+    completion_tokens_details: _TokenPayload | None = None
+    input_token_details: _CachePayload | None = None
+    prompt_tokens_details: _CachePayload | None = None
+    reasoning_tokens_details: _TokenPayload | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,77 +145,70 @@ class ModelUsage:
     cost: CostUsage = field(default_factory=CostUsage)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any] | None) -> "ModelUsage":
-        value = _mapping(value)
-        token_values = _mapping(value.get("tokens"))
-        cache_values = _mapping(value.get("cache"))
-        audio_values = _mapping(value.get("audio"))
-        cost_values = _mapping(value.get("cost"))
-        input_tokens = _integer(
-            token_values.get("input_tokens", value.get("input_tokens", value.get("prompt_tokens")))
-        )
-        output_tokens = _integer(
-            token_values.get(
-                "output_tokens", value.get("output_tokens", value.get("completion_tokens"))
-            )
-        )
-        total_tokens = _integer(value.get("total_tokens")) or input_tokens + output_tokens
-        if token_values.get("total_tokens"):
-            total_tokens = _integer(token_values["total_tokens"])
-        output_details = _mapping(
-            value.get("output_token_details") or value.get("completion_tokens_details")
-        )
-        input_details = _mapping(
-            value.get("input_token_details") or value.get("prompt_tokens_details")
-        )
-        reasoning_details = _mapping(value.get("reasoning_tokens_details"))
-        raw_cost = value.get("cost_usd")
-        if raw_cost is None:
-            raw_cost = cost_values.get("cost_usd", cost_values.get("usd", value.get("cost")))
+    def from_mapping(cls, value: Mapping[str, object] | None) -> "ModelUsage":
         try:
-            cost_usd = max(
-                0.0,
-                float(raw_cost or 0.0),
-            )
-        except (TypeError, ValueError):
-            cost_usd = 0.0
+            payload = _UsagePayload.model_validate(value or {})
+        except ValidationError:
+            payload = _UsagePayload()
+        tokens = payload.tokens or _TokenPayload(
+            input_tokens=payload.input_tokens,
+            output_tokens=payload.output_tokens,
+            total_tokens=payload.total_tokens,
+            reasoning_tokens=payload.reasoning_tokens,
+        )
+        input_tokens = max(0, tokens.input_tokens or 0)
+        output_tokens = max(0, tokens.output_tokens or 0)
+        total_tokens = max(0, tokens.total_tokens or input_tokens + output_tokens)
+        output_details = payload.output_token_details or payload.completion_tokens_details
+        input_details = payload.input_token_details or payload.prompt_tokens_details
+        reasoning_details = payload.reasoning_tokens_details
+        reasoning_value = (
+            tokens.reasoning_tokens
+            or (output_details.reasoning_tokens if output_details else 0)
+            or (reasoning_details.reasoning_tokens if reasoning_details else 0)
+            or 0
+        )
+        reasoning_tokens = max(0, reasoning_value)
+        cache = payload.cache or _CachePayload(
+            cache_read_tokens=payload.cache_read_tokens,
+            cache_write_tokens=payload.cache_write_tokens,
+        )
+        cache_read_value = (
+            cache.cache_read_tokens
+            or (input_details.cache_read_tokens if input_details else 0)
+            or 0
+        )
+        cache_write_value = (
+            cache.cache_write_tokens
+            or (input_details.cache_write_tokens if input_details else 0)
+            or 0
+        )
+        cache_read_tokens = max(0, cache_read_value)
+        cache_write_tokens = max(0, cache_write_value)
+        audio = payload.audio or _AudioPayload(
+            input_audio_tokens=payload.input_audio_tokens,
+            output_audio_tokens=payload.output_audio_tokens,
+        )
+        cost = payload.cost
+        cost_usd = cost.cost_usd if isinstance(cost, _CostPayload) else cost
+        if cost_usd is None:
+            cost_usd = payload.cost_usd
         return cls(
             tokens=TokenUsage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 total_tokens=total_tokens,
-                reasoning_tokens=_integer(
-                    token_values.get("reasoning_tokens")
-                    or value.get("reasoning_tokens")
-                    or output_details.get("reasoning_tokens")
-                    or reasoning_details.get("reasoning_tokens")
-                    or reasoning_details.get("reasoning")
-                ),
+                reasoning_tokens=reasoning_tokens,
             ),
             cache=CacheUsage(
-                cache_read_tokens=_integer(
-                    cache_values.get("cache_read_tokens")
-                    or value.get("cache_read_tokens")
-                    or value.get("cached_tokens")
-                    or input_details.get("cache_read")
-                    or input_details.get("cached_tokens")
-                ),
-                cache_write_tokens=_integer(
-                    cache_values.get("cache_write_tokens")
-                    or value.get("cache_write_tokens")
-                    or input_details.get("cache_creation")
-                    or input_details.get("cache_write_tokens")
-                ),
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             ),
             audio=AudioUsage(
-                input_audio_tokens=_integer(
-                    audio_values.get("input_audio_tokens", value.get("input_audio_tokens"))
-                ),
-                output_audio_tokens=_integer(
-                    audio_values.get("output_audio_tokens", value.get("output_audio_tokens"))
-                ),
+                input_audio_tokens=max(0, audio.input_audio_tokens or 0),
+                output_audio_tokens=max(0, audio.output_audio_tokens or 0),
             ),
-            cost=CostUsage(cost_usd=cost_usd),
+            cost=CostUsage(cost_usd=max(0.0, cost_usd or 0.0)),
         )
 
 
