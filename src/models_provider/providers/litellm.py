@@ -175,14 +175,14 @@ class LiteLLMChatModel(BaseChatModel):
         )
         usage = ModelUsage.from_mapping(usage_payload)
         usage_metadata = {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "total_tokens": usage.total_tokens,
+            "input_tokens": usage.tokens.input_tokens,
+            "output_tokens": usage.tokens.output_tokens,
+            "total_tokens": usage.tokens.total_tokens,
             "input_token_details": {
-                "cache_read": usage.cache_read_tokens,
-                "cache_creation": usage.cache_write_tokens,
+                "cache_read": usage.cache.cache_read_tokens,
+                "cache_creation": usage.cache.cache_write_tokens,
             },
-            "output_token_details": {"reasoning": usage.reasoning_tokens},
+            "output_token_details": {"reasoning": usage.tokens.reasoning_tokens},
         }
         message = AIMessage(
             content=content,
