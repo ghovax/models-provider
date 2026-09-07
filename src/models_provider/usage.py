@@ -18,13 +18,6 @@ def _integer(value: Any) -> int:
         return 0
 
 
-def _decimal(value: Any) -> float:
-    try:
-        return max(0.0, float(value or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -68,6 +61,10 @@ class ModelUsage:
             value.get("input_token_details") or value.get("prompt_tokens_details")
         )
         reasoning_details = _mapping(value.get("reasoning_tokens_details"))
+        try:
+            cost_usd = max(0.0, float(value.get("cost_usd", value.get("cost")) or 0.0))
+        except (TypeError, ValueError):
+            cost_usd = 0.0
         return cls(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -91,7 +88,7 @@ class ModelUsage:
             ),
             input_audio_tokens=_integer(value.get("input_audio_tokens")),
             output_audio_tokens=_integer(value.get("output_audio_tokens")),
-            cost_usd=_decimal(value.get("cost_usd", value.get("cost"))),
+            cost_usd=cost_usd,
         )
 
     def combined_with(self, other: "ModelUsage") -> "ModelUsage":

@@ -5,16 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import html
 import json
 import os
 import platform
 import time
-import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, AsyncIterator, Callable, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -111,7 +108,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         tool_choice: str | None = None,
         parallel_tool_calls: bool | None = None,
         **kwargs: Any,
-    ) -> Runnable:
+    ) -> Runnable[Any, Any]:
         formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
         bound: dict[str, Any] = {"tools": formatted_tools}
         if tool_choice is not None:
@@ -342,7 +339,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         if event_type == "response.completed":
             response = data.get("response") or {}
             raw_usage = response.get("usage")
-            usage = None
+            usage: Any = None
             if raw_usage:
                 input_tokens = int(raw_usage.get("input_tokens") or 0)
                 output_tokens = int(raw_usage.get("output_tokens") or 0)
@@ -498,27 +495,16 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             async for chunk in self._astream_http(payload, headers, state):
                 yield chunk
 
-    async def stream_generations(
+    async def _agenerate(
         self,
         messages: Sequence[BaseMessage],
         stop: list[str] | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[ChatGenerationChunk]:
-        """Stream provider generations for an embedding model wrapper."""
-        async for chunk in self._astream(messages, stop=stop, **kwargs):
-            yield chunk
-
-    def generate_result(
-        self,
-        messages: Sequence[BaseMessage],
-        stop: list[str] | None = None,
+        run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Generate one result for an embedding model wrapper."""
-        return self._generate(messages, stop=stop, **kwargs)
-
-    @classmethod
-    def _chunks_to_result(cls, chunks: list[AIMessageChunk]) -> ChatResult:
+        chunks: list[AIMessageChunk] = []
+        async for chunk in self._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            chunks.append(cast(AIMessageChunk, chunk.message))
         aggregate = add_ai_message_chunks(chunks[0], *chunks[1:]) if chunks else None
         if aggregate is None:
             return ChatResult(generations=[])
@@ -535,18 +521,6 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             ]
         )
 
-    async def _agenerate(
-        self,
-        messages: Sequence[BaseMessage],
-        stop: list[str] | None = None,
-        run_manager: Any = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        chunks: list[AIMessageChunk] = []
-        async for chunk in self._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
-            chunks.append(cast(AIMessageChunk, chunk.message))
-        return self._chunks_to_result(chunks)
-
     def _generate(
         self,
         messages: Sequence[BaseMessage],
@@ -554,38 +528,15 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        tokens = OpenAIAccountTokens.from_values(self.credential_values)
-        if not isinstance(tokens, OpenAIAccountTokens) or tokens.is_expired():
-            raise AuthenticationError("Not signed in to OpenAI (or the session expired).")
-        payload = self.build_payload(messages, stream=True, **kwargs)
-        headers = OpenAIAccountTokens.request_headers(tokens, self.session_id)
-        chunks: list[AIMessageChunk] = []
-        with httpx.Client(timeout=self.timeout) as client:
-            with client.stream("POST", RESPONSES_URL, json=payload, headers=headers) as response:
-                if response.status_code >= 400:
-                    raise self._http_error(
-                        response.status_code, response.read().decode("utf-8", "replace")
-                    )
-                state: dict[str, Any] = {
-                    "saw_tool_call": False,
-                    "model": self.model,
-                    "context_window": self.context_window(),
-                }
-                for line in response.iter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    raw = line[len("data:") :].strip()
-                    if not raw or raw == "[DONE]":
-                        continue
-                    try:
-                        data = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if isinstance(data, dict):
-                        chunk = self._translate_event(data, state)
-                        if chunk is not None:
-                            chunks.append(cast(AIMessageChunk, chunk.message))
-        return self._chunks_to_result(chunks)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            )
+        raise RuntimeError(
+            "OpenAIAccountResponsesModel cannot run synchronously inside an active event loop; use ainvoke."
+        )
 
 
 OPENAI_AUTHORIZATION_URL = "https://auth.openai.com/oauth/authorize"
@@ -628,9 +579,7 @@ class OpenAIAccountTokens(OAuthTokens):
         email: str = "",
         expires_at: float = 0.0,
     ) -> None:
-        object.__setattr__(self, "access_token", access_token)
-        object.__setattr__(self, "refresh_token", refresh_token)
-        object.__setattr__(self, "expires_at", expires_at)
+        super().__init__(access_token, refresh_token, expires_at)
         object.__setattr__(self, "id_token", id_token)
         object.__setattr__(self, "account_id", account_id)
         object.__setattr__(self, "email", email)
@@ -781,76 +730,6 @@ class OpenAIAccountTokens(OAuthTokens):
         }
 
 
-class OpenAIAccountLoginFlow:
-    """PKCE loopback login. The host opens ``authorize_url`` and owns the browser policy."""
-
-    def __init__(self, values: dict[str, Any]) -> None:
-        self._values = values
-        self._authorization = OAuthAuthorizationRequest(
-            "openai",
-            OPENAI_OAUTH_CONFIGURATION,
-            token_parser=OpenAIAccountTokens.from_payload,
-        )
-        self._server: HTTPServer | None = None
-        self._captured: dict[str, str] = {}
-
-    @property
-    def authorize_url(self) -> str:
-        return self._authorization.authorize_url
-
-    async def start(self) -> None:
-        flow = self
-
-        class CallbackHandler(BaseHTTPRequestHandler):
-            def log_message(self, format_string: str, *arguments: object) -> None:
-                return
-
-            def do_GET(self) -> None:
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                if urllib.parse.urlparse(self.path).path != "/auth/callback":
-                    flow._captured["error"] = "Invalid callback path."
-                elif query.get("state", [""])[0] != flow._authorization.state:
-                    flow._captured["error"] = "Authorization state mismatch."
-                elif query.get("code", [""])[0]:
-                    flow._captured["code"] = query["code"][0]
-                else:
-                    flow._captured["error"] = query.get("error", ["Authorization failed."])[0]
-                body = f"<html><body>{html.escape(flow._captured.get('error', 'Signed in.'))}</body></html>".encode()
-                self.send_response(200 if "code" in flow._captured else 400)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-        self._server = HTTPServer(("127.0.0.1", 1455), CallbackHandler)
-        self._server.timeout = 0.5
-
-    async def wait(self, timeout: float = 300.0) -> OpenAIAccountTokens:  # noqa: ASYNC109
-        if self._server is None:
-            raise AuthenticationError("start() must be called before wait().")
-        deadline = time.monotonic() + timeout
-        try:
-            while not self._captured:
-                if time.monotonic() >= deadline:
-                    raise AuthenticationError("OpenAI sign-in timed out.")
-                await asyncio.to_thread(self._server.handle_request)
-            if "code" not in self._captured:
-                raise AuthenticationError(self._captured.get("error", "OpenAI sign-in failed."))
-            tokens = await self._authorization.exchange(self._captured["code"])
-            if not isinstance(tokens, OpenAIAccountTokens):
-                raise AuthenticationError("OpenAI returned an invalid account token response.")
-            self._values["openai"] = tokens
-            return tokens
-        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
-            raise AuthenticationError(f"Could not complete OpenAI sign-in: {error}") from error
-        finally:
-            await self.close()
-
-    async def close(self) -> None:
-        if self._server is not None:
-            await asyncio.to_thread(self._server.server_close)
-            self._server = None
-
-
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
 
@@ -861,11 +740,7 @@ class OpenAI:
     oauth: OAuthProvider = OAuthAdapter(
         "openai",
         OPENAI_OAUTH_CONFIGURATION,
-        flow_factory=OpenAIAccountLoginFlow,
-        token_parser=lambda payload, previous: OpenAIAccountTokens.from_payload(
-            payload,
-            previous if isinstance(previous, OpenAIAccountTokens) else None,
-        ),
+        token_parser=OpenAIAccountTokens.from_payload,
         header_builder=lambda token, _request, session: OpenAIAccountTokens.request_headers(
             cast(OpenAIAccountTokens, token), session
         ),
