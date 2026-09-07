@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .usage import ModelUsage
 
@@ -21,21 +22,39 @@ __all__ = [
 ]
 
 
-def _text(value: Any) -> str:
-    return str(value).strip() if value is not None else ""
+class _ModelPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    family: str = ""
+    reasoning: bool = False
+    tool_call: bool = False
+    attachment: bool = False
+    structured_output: bool = False
+    temperature: bool = False
+    open_weights: bool = False
+    modalities: Mapping[str, Sequence[str]] = Field(default_factory=dict)
+    limit: Mapping[str, int] = Field(default_factory=dict)
+    cost: Mapping[str, float | None] = Field(default_factory=dict)
+    release_date: str = ""
+    last_updated: str = ""
+    knowledge_cutoff: str = ""
+    status: str = ""
+    reasoning_options: tuple[Mapping[str, object], ...] = ()
 
 
-def _positive_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+class _ProviderPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
-
-def _texts(value: Any) -> tuple[str, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return ()
-    return tuple(text for text in (_text(item) for item in value) if text)
+    id: str = ""
+    name: str = ""
+    npm: str = ""
+    env: tuple[str, ...] = ()
+    doc: str = ""
+    api: str = ""
+    models: Mapping[str, _ModelPayload] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +67,7 @@ class ProviderRecord:
     environment_variables: tuple[str, ...] = ()
     documentation_url: str = ""
     api_base: str = ""
-    extra: Mapping[str, Any] = field(default_factory=dict)
+    extra: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,89 +96,50 @@ class ModelRecord:
     last_updated: str = ""
     knowledge_cutoff: str = ""
     status: str = ""
-    reasoning_options: tuple[Mapping[str, Any], ...] = ()
-    extra: Mapping[str, Any] = field(default_factory=dict)
+    reasoning_options: tuple[Mapping[str, object], ...] = ()
+    extra: Mapping[str, object] = field(default_factory=dict)
 
     @classmethod
-    def from_payload(cls, provider: str, model: str, payload: Mapping[str, Any]) -> "ModelRecord":
-        direct_fields = {
-            item.name
-            for item in fields(cls)
-            if item.name
-            not in {
-                "identifier",
-                "provider",
-                "model",
-                "name",
-                "input_modalities",
-                "output_modalities",
-                "context_length",
-                "input_limit",
-                "output_limit",
-                "cost",
-                "reasoning_options",
-                "extra",
-            }
-        }
-        values = {name: payload[name] for name in direct_fields if name in payload}
-        modalities = payload.get("modalities")
-        limits = payload.get("limit")
-        costs = payload.get("cost")
-        modalities = modalities if isinstance(modalities, Mapping) else {}
-        limits = limits if isinstance(limits, Mapping) else {}
-        costs = costs if isinstance(costs, Mapping) else {}
-        input_modalities = _texts(modalities.get("input"))
-        output_modalities = _texts(modalities.get("output"))
-        model_id = _text(payload.get("id")) or model
-        normalized_cost: dict[str, float] = {}
-        for name, value in costs.items():
-            if not isinstance(value, (int, float, str)):
-                continue
-            try:
-                normalized_cost[str(name)] = float(value)
-            except ValueError:
-                continue
-        values.update(
-            {
-                "identifier": f"{provider}/{model_id}",
-                "provider": provider,
-                "model": model_id,
-                "name": _text(payload.get("name")) or model_id,
-                "input_modalities": input_modalities,
-                "output_modalities": output_modalities,
-                "context_length": _positive_int(limits.get("context")),
-                "input_limit": _positive_int(limits.get("input")),
-                "output_limit": _positive_int(limits.get("output")),
-                "cost": normalized_cost,
-                "reasoning_options": tuple(
-                    item
-                    for item in payload.get("reasoning_options", ())
-                    if isinstance(item, Mapping)
-                ),
-                "extra": dict(payload),
-            }
+    def from_payload(
+        cls, provider: str, model: str, payload: Mapping[str, object]
+    ) -> "ModelRecord":
+        try:
+            definition = _ModelPayload.model_validate(payload)
+        except ValidationError as error:
+            raise ValueError(f"invalid model metadata for {provider}/{model}") from error
+        model_id = definition.id.strip() or model
+        modalities = definition.modalities
+        limits = definition.limit
+        return cls(
+            identifier=f"{provider}/{model_id}",
+            provider=provider,
+            model=model_id,
+            name=definition.name.strip() or model_id,
+            description=definition.description.strip(),
+            family=definition.family.strip(),
+            reasoning=definition.reasoning,
+            tool_call=definition.tool_call,
+            attachment=definition.attachment,
+            structured_output=definition.structured_output,
+            temperature=definition.temperature,
+            open_weights=definition.open_weights,
+            input_modalities=tuple(
+                item.strip() for item in modalities.get("input", ()) if item.strip()
+            ),
+            output_modalities=tuple(
+                item.strip() for item in modalities.get("output", ()) if item.strip()
+            ),
+            context_length=max(0, limits.get("context", 0)),
+            input_limit=max(0, limits.get("input", 0)),
+            output_limit=max(0, limits.get("output", 0)),
+            cost=dict(definition.cost),
+            release_date=definition.release_date.strip(),
+            last_updated=definition.last_updated.strip(),
+            knowledge_cutoff=definition.knowledge_cutoff.strip(),
+            status=definition.status.strip(),
+            reasoning_options=definition.reasoning_options,
+            extra=dict(payload),
         )
-        for name in (
-            "description",
-            "family",
-            "release_date",
-            "last_updated",
-            "knowledge_cutoff",
-            "status",
-        ):
-            if name in values:
-                values[name] = _text(values[name])
-        for name in (
-            "reasoning",
-            "tool_call",
-            "attachment",
-            "structured_output",
-            "temperature",
-            "open_weights",
-        ):
-            if name in values:
-                values[name] = bool(values[name])
-        return cls(**values)
 
     def validate_reasoning_effort(self, reasoning_effort: str | None) -> str | None:
         """Validate a requested reasoning effort against catalogue metadata."""
@@ -170,7 +150,7 @@ class ModelRecord:
             raise ValueError("reasoning_effort must be a non-empty string or None")
         supported_values: list[str] = []
         for option in self.reasoning_options:
-            if _text(option.get("type")) != "effort":
+            if str(option.get("type") or "").strip() != "effort":
                 continue
             raw_values = option.get("values")
             if not isinstance(raw_values, Sequence) or isinstance(
@@ -178,7 +158,7 @@ class ModelRecord:
             ):
                 continue
             supported_values.extend(
-                value for value in (_text(item) for item in raw_values) if value
+                str(value).strip() for value in raw_values if str(value).strip()
             )
         supported = tuple(dict.fromkeys(supported_values))
         if supported and normalized not in supported:
@@ -202,34 +182,36 @@ class ModelCatalogue:
         self._models = {model.identifier: model for model in models}
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> "ModelCatalogue":
+    def from_payload(cls, payload: Mapping[str, object]) -> "ModelCatalogue":
         """Parse the object returned by ``https://models.dev/api.json``."""
         providers: list[ProviderRecord] = []
         models: list[ModelRecord] = []
         for raw_identifier, raw_provider in payload.items():
             if not isinstance(raw_provider, Mapping):
                 continue
-            identifier = _text(raw_provider.get("id")) or _text(raw_identifier)
+            try:
+                provider_data = _ProviderPayload.model_validate(raw_provider)
+            except ValidationError:
+                continue
+            identifier = provider_data.id.strip() or str(raw_identifier).strip()
             if not identifier:
                 continue
             provider = ProviderRecord(
                 identifier=identifier,
-                name=_text(raw_provider.get("name")) or identifier,
-                npm=_text(raw_provider.get("npm")),
-                environment_variables=_texts(raw_provider.get("env")),
-                documentation_url=_text(raw_provider.get("doc")),
-                api_base=_text(raw_provider.get("api")),
+                name=provider_data.name.strip() or identifier,
+                npm=provider_data.npm.strip(),
+                environment_variables=tuple(
+                    item.strip() for item in provider_data.env if item.strip()
+                ),
+                documentation_url=provider_data.doc.strip(),
+                api_base=provider_data.api.strip(),
                 extra=dict(raw_provider),
             )
             providers.append(provider)
-            raw_models = raw_provider.get("models") or {}
-            if not isinstance(raw_models, Mapping):
-                continue
-            for raw_model, raw_definition in raw_models.items():
-                if isinstance(raw_definition, Mapping):
-                    models.append(
-                        ModelRecord.from_payload(identifier, _text(raw_model), raw_definition)
-                    )
+            for raw_model, definition in provider_data.models.items():
+                models.append(
+                    ModelRecord.from_payload(identifier, raw_model, definition.model_dump())
+                )
         return cls(providers, models)
 
     def providers(self) -> tuple[ProviderRecord, ...]:

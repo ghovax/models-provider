@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, cast
+from typing import Any, AsyncIterator, Callable, ClassVar
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -83,6 +83,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     """A model backed by the OpenAI account subscription Codex Responses endpoint."""
 
     model: str
+    model_type: ClassVar[str] = "openai"
     context_length: int = 0
     session_id: str = ""
     timeout: float | None = 300.0
@@ -92,7 +93,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        return "openai-account-responses"
+        return self.model_type
 
     def context_window(self) -> int:
         return max(0, int(self.context_length or 0))
@@ -394,7 +395,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         blocks = [content_block] if content_block is not None else []
         return ChatGenerationChunk(
             message=AIMessageChunk(
-                content=cast(Any, blocks),
+                content=[dict(block) for block in blocks],
                 tool_call_chunks=[tool_call_chunk] if tool_call_chunk else [],
                 additional_kwargs=(
                     {"reasoning_items": [reasoning_item], "reasoning_model": model}
@@ -504,7 +505,8 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     ) -> ChatResult:
         chunks: list[AIMessageChunk] = []
         async for chunk in self._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
-            chunks.append(cast(AIMessageChunk, chunk.message))
+            if isinstance(chunk.message, AIMessageChunk):
+                chunks.append(chunk.message)
         aggregate = add_ai_message_chunks(chunks[0], *chunks[1:]) if chunks else None
         if aggregate is None:
             return ChatResult(generations=[])
@@ -673,10 +675,10 @@ class OpenAIAccountTokens(OAuthTokens):
         }
 
     @staticmethod
-    def request_headers(
-        tokens: OpenAIAccountTokens, session_identifier: str = ""
-    ) -> dict[str, str]:
+    def request_headers(tokens: OAuthTokens, session_identifier: str = "") -> dict[str, str]:
         """Return headers required by the OpenAI account Responses endpoint."""
+        if not isinstance(tokens, OpenAIAccountTokens):
+            raise AuthenticationError("OpenAI OAuth returned an invalid token type.")
         program = os.environ.get("TERM_PROGRAM", "").strip()
         version = os.environ.get("TERM_PROGRAM_VERSION", "").strip()
         if program:
@@ -742,7 +744,7 @@ class OpenAI:
         OPENAI_OAUTH_CONFIGURATION,
         token_parser=OpenAIAccountTokens.from_payload,
         header_builder=lambda token, _request, session: OpenAIAccountTokens.request_headers(
-            cast(OpenAIAccountTokens, token), session
+            token, session
         ),
         authorization_factory=lambda redirect_uri, **kwargs: OAuthAuthorizationRequest(
             "openai",
