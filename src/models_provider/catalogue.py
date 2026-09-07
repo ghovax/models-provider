@@ -8,6 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
 
+from .auth import OAuthAuthorization
 from .usage import ModelUsage
 
 __all__ = [
@@ -267,7 +268,7 @@ class ModelProvider(Protocol):
         self,
         model_identifier: str,
         *,
-        authorization: Any | None = None,
+        authorization: OAuthAuthorization | Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> BaseChatModel:
         """Create a model using the selected user's authorization and keyword options."""

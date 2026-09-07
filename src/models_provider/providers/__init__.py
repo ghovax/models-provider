@@ -57,14 +57,18 @@ class ProviderRegistry:
         )
 
     def sign_in(self, provider: str, values: dict[str, Any]) -> LoginFlow:
-        provider = provider.strip().lower()
-        implementation = next(
-            (candidate for candidate in self._providers if candidate.identifier == provider),
+        provider_identifier = provider.strip().lower()
+        candidate = next(
+            (
+                candidate
+                for candidate in self._providers
+                if candidate.identifier == provider_identifier
+            ),
             None,
         )
-        if implementation is None or implementation.oauth is None:
-            raise ValueError(f"Provider {provider!r} does not support OAuth.")
-        return implementation.oauth.flow(values)
+        if candidate is None or candidate.oauth is None:
+            raise ValueError(f"Provider {provider_identifier!r} does not support OAuth.")
+        return candidate.oauth.flow(values)
 
     def chat(
         self,
@@ -78,9 +82,9 @@ class ProviderRegistry:
         if provider is None:
             raise ValueError(f"Provider {record.provider!r} is missing from the catalogue.")
         authentication = self.authentication(values)
-        for implementation in self._providers:
-            if implementation.supports(record):
-                return implementation.chat(
+        for candidate in self._providers:
+            if candidate.supports(record):
+                return candidate.chat(
                     record,
                     provider,
                     values=values,
