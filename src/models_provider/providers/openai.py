@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, ClassVar
+from typing import Any, AsyncIterator, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -83,7 +83,6 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     """A model backed by the OpenAI account subscription Codex Responses endpoint."""
 
     model: str
-    model_type: ClassVar[str] = "openai"
     context_length: int = 0
     session_id: str = ""
     timeout: float | None = 300.0
@@ -93,7 +92,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        return self.model_type
+        return "openai"
 
     def context_window(self) -> int:
         return max(0, int(self.context_length or 0))

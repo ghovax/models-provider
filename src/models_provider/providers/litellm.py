@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import Any, ClassVar
+from typing import Any
 
 import litellm
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -57,7 +57,6 @@ class LiteLLMChatModel(BaseChatModel):
     """A provider-qualified model usable by any LangChain-compatible application."""
 
     model: str
-    model_type: ClassVar[str] = "litellm"
     api_key: SecretStr | None = None
     api_base: str | None = None
     timeout: float | None = 300.0
@@ -71,7 +70,7 @@ class LiteLLMChatModel(BaseChatModel):
 
     @property
     def _llm_type(self) -> str:
-        return self.model_type
+        return "litellm"
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
