@@ -181,31 +181,6 @@ def _oauth_tokens_from_payload(
     )
 
 
-def _oauth_tokens_to_mapping(tokens: OAuthTokens) -> dict[str, Any]:
-    return {
-        "access_token": tokens.access_token,
-        "refresh_token": tokens.refresh_token,
-        "expires_at": tokens.expires_at,
-    }
-
-
-def _oauth_tokens_from_mapping(payload: Mapping[str, Any]) -> OAuthTokens:
-    if not isinstance(payload, Mapping):
-        raise AuthenticationError("Stored OAuth credentials are invalid.")
-    access_token = str(payload.get("access_token") or "")
-    if not access_token:
-        raise AuthenticationError("Stored OAuth credentials contain no access token.")
-    try:
-        expires_at = float(payload.get("expires_at") or 0.0)
-    except (TypeError, ValueError) as error:
-        raise AuthenticationError("Stored OAuth credentials have an invalid expiry.") from error
-    return OAuthTokens(
-        access_token=access_token,
-        refresh_token=str(payload.get("refresh_token") or ""),
-        expires_at=expires_at,
-    )
-
-
 class OAuthAuthorizationRequest:
     """Provider-neutral authorization-code request for a host-owned callback."""
 
@@ -559,8 +534,37 @@ class OAuthAdapter:
         self._token_parser = token_parser or _oauth_tokens_from_payload
         self._header_builder = header_builder
         self._authorization_factory = authorization_factory
-        self._token_serializer = token_serializer or _oauth_tokens_to_mapping
-        self._token_deserializer = token_deserializer or _oauth_tokens_from_mapping
+        if token_serializer is None:
+            self._token_serializer = lambda tokens: {
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "expires_at": tokens.expires_at,
+            }
+        else:
+            self._token_serializer = token_serializer
+        if token_deserializer is None:
+
+            def deserialize(payload: Mapping[str, Any]) -> OAuthTokens:
+                if not isinstance(payload, Mapping):
+                    raise AuthenticationError("Stored OAuth credentials are invalid.")
+                access_token = str(payload.get("access_token") or "")
+                if not access_token:
+                    raise AuthenticationError("Stored OAuth credentials contain no access token.")
+                try:
+                    expires_at = float(payload.get("expires_at") or 0.0)
+                except (TypeError, ValueError) as error:
+                    raise AuthenticationError(
+                        "Stored OAuth credentials have an invalid expiry."
+                    ) from error
+                return OAuthTokens(
+                    access_token=access_token,
+                    refresh_token=str(payload.get("refresh_token") or ""),
+                    expires_at=expires_at,
+                )
+
+            self._token_deserializer = deserialize
+        else:
+            self._token_deserializer = token_deserializer
         self._refresh_lock = asyncio.Lock()
 
     def flow(self, values: dict[str, Any]) -> LoginFlow:
@@ -779,147 +783,86 @@ class ProviderAuthProfile:
     credential_identifier: str = ""
 
 
-_AUTH_PROFILE_OVERRIDES: dict[str, ProviderAuthProfile] = {
-    "anthropic": ProviderAuthProfile(
-        "anthropic",
-        environment_variables=("ANTHROPIC_API_KEY",),
-        api_key_header="x-api-key",
-        api_key_prefix="",
-    ),
-    "azure": ProviderAuthProfile(
-        "azure",
-        environment_variables=("AZURE_API_KEY",),
-        credential_environment_variables=("AZURE_RESOURCE_NAME",),
-        api_key_header="api-key",
-        api_key_prefix="",
-    ),
-    "commandcode": ProviderAuthProfile(
-        "commandcode",
-        environment_variables=("COMMAND_CODE_API_KEY",),
-        default_base_url="https://api.commandcode.ai/provider/v1",
-    ),
-    "cursor": ProviderAuthProfile("cursor", method="oauth"),
-    "custom": ProviderAuthProfile("custom"),
-    "google": ProviderAuthProfile(
-        "google",
-        environment_variables=(
+_VERTEX_ENVIRONMENT_VARIABLES = (
+    "GOOGLE_VERTEX_PROJECT",
+    "GOOGLE_VERTEX_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
+_AWS_ENVIRONMENT_VARIABLES = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+_AUTH_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "anthropic": {
+        "environment_variables": ("ANTHROPIC_API_KEY",),
+        "api_key_header": "x-api-key",
+        "api_key_prefix": "",
+    },
+    "azure": {
+        "environment_variables": ("AZURE_API_KEY",),
+        "credential_environment_variables": ("AZURE_RESOURCE_NAME",),
+        "api_key_header": "api-key",
+        "api_key_prefix": "",
+    },
+    "commandcode": {
+        "environment_variables": ("COMMAND_CODE_API_KEY",),
+        "default_base_url": "https://api.commandcode.ai/provider/v1",
+    },
+    "cursor": {"method": "oauth"},
+    "google": {
+        "environment_variables": (
             "GOOGLE_API_KEY",
             "GOOGLE_GENERATIVE_AI_API_KEY",
             "GEMINI_API_KEY",
         ),
-        api_key_header="x-goog-api-key",
-        api_key_prefix="",
-    ),
-    "google-vertex": ProviderAuthProfile(
-        "google-vertex",
-        method="environment",
-        credential_environment_variables=(
-            "GOOGLE_VERTEX_PROJECT",
-            "GOOGLE_VERTEX_LOCATION",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-        ),
-    ),
-    "google-vertex-anthropic": ProviderAuthProfile(
-        "google-vertex-anthropic",
-        method="environment",
-        credential_environment_variables=(
-            "GOOGLE_VERTEX_PROJECT",
-            "GOOGLE_VERTEX_LOCATION",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-        ),
-    ),
-    "amazon-bedrock": ProviderAuthProfile(
-        "amazon-bedrock",
-        method="environment",
-        credential_environment_variables=(
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "AWS_REGION",
-            "AWS_DEFAULT_REGION",
-            "AWS_BEARER_TOKEN_BEDROCK",
-        ),
-    ),
-    "bedrock": ProviderAuthProfile(
-        "bedrock",
-        method="environment",
-        credential_environment_variables=(
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "AWS_REGION",
-            "AWS_DEFAULT_REGION",
-            "AWS_BEARER_TOKEN_BEDROCK",
-        ),
-    ),
-    "github-copilot": ProviderAuthProfile(
-        "github-copilot",
-        environment_variables=("GITHUB_TOKEN",),
-        default_base_url="https://api.githubcopilot.com",
-    ),
-    "azure-cognitive-services": ProviderAuthProfile(
-        "azure-cognitive-services",
-        environment_variables=("AZURE_COGNITIVE_SERVICES_API_KEY",),
-        credential_environment_variables=("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",),
-        api_key_header="api-key",
-        api_key_prefix="",
-    ),
-    "opencode": ProviderAuthProfile(
-        "opencode",
-        environment_variables=("OPENCODE_API_KEY",),
-        default_base_url="https://opencode.ai/zen/v1",
-        headers={"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
-        anonymous_api_key="public",
-    ),
-    "opencode-go": ProviderAuthProfile(
-        "opencode-go",
-        environment_variables=("OPENCODE_API_KEY",),
-        default_base_url="https://opencode.ai/zen/v1",
-        headers={"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
-        anonymous_api_key="public",
-        credential_identifier="opencode",
-    ),
+        "api_key_header": "x-goog-api-key",
+        "api_key_prefix": "",
+    },
+    "google-vertex": {
+        "method": "environment",
+        "credential_environment_variables": _VERTEX_ENVIRONMENT_VARIABLES,
+    },
+    "google-vertex-anthropic": {
+        "method": "environment",
+        "credential_environment_variables": _VERTEX_ENVIRONMENT_VARIABLES,
+    },
+    "amazon-bedrock": {
+        "method": "environment",
+        "credential_environment_variables": _AWS_ENVIRONMENT_VARIABLES,
+    },
+    "bedrock": {
+        "method": "environment",
+        "credential_environment_variables": _AWS_ENVIRONMENT_VARIABLES,
+    },
+    "github-copilot": {
+        "environment_variables": ("GITHUB_TOKEN",),
+        "default_base_url": "https://api.githubcopilot.com",
+    },
+    "azure-cognitive-services": {
+        "environment_variables": ("AZURE_COGNITIVE_SERVICES_API_KEY",),
+        "credential_environment_variables": ("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME",),
+        "api_key_header": "api-key",
+        "api_key_prefix": "",
+    },
+    "opencode": {
+        "environment_variables": ("OPENCODE_API_KEY",),
+        "default_base_url": "https://opencode.ai/zen/v1",
+        "headers": {"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        "anonymous_api_key": "public",
+    },
+    "opencode-go": {
+        "environment_variables": ("OPENCODE_API_KEY",),
+        "default_base_url": "https://opencode.ai/zen/v1",
+        "headers": {"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        "anonymous_api_key": "public",
+        "credential_identifier": "opencode",
+    },
 }
-
-
-def provider_auth_profile(
-    provider_identifier: str,
-    *,
-    environment_variables: tuple[str, ...] = (),
-    credential_environment_variables: tuple[str, ...] = (),
-    default_base_url: str = "",
-    headers: Mapping[str, str] | None = None,
-    anonymous_api_key: str = "",
-    credential_identifier: str = "",
-) -> ProviderAuthProfile:
-    """Build the standard authentication profile for a provider identifier."""
-    provider = provider_identifier.strip().lower()
-    if not provider:
-        raise ValueError("provider identifier cannot be empty")
-    override = _AUTH_PROFILE_OVERRIDES.get(provider)
-    if override is None:
-        return ProviderAuthProfile(
-            identifier=provider,
-            environment_variables=environment_variables,
-            credential_environment_variables=credential_environment_variables,
-            default_base_url=default_base_url,
-            headers=dict(headers or {}),
-            anonymous_api_key=anonymous_api_key,
-            credential_identifier=credential_identifier,
-            method="environment" if credential_environment_variables else "api_key",
-        )
-    return replace(
-        override,
-        environment_variables=(
-            override.environment_variables
-            if override.method == "environment"
-            else override.environment_variables or environment_variables
-        ),
-        default_base_url=override.default_base_url or default_base_url,
-        headers=dict(headers or override.headers),
-        anonymous_api_key=override.anonymous_api_key or anonymous_api_key,
-        credential_identifier=override.credential_identifier or credential_identifier,
-    )
 
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -945,54 +888,37 @@ class ProviderAuthentication:
     def __init__(
         self,
         values: dict[str, Any],
-        profiles: Mapping[str, ProviderAuthProfile] | None = None,
         *,
-        catalogue: Any | None = None,
-        api_keys: Mapping[str, str] | None = None,
-        api_bases: Mapping[str, str] | None = None,
+        catalogue: Any,
         oauth_adapters: Mapping[str, OAuthProvider] | None = None,
     ) -> None:
         self._values = values
-        self._profiles = {key.lower(): value for key, value in (profiles or {}).items()}
         self._catalogue = catalogue
-        self._api_keys = dict(api_keys or {})
-        self._api_bases = dict(api_bases or {})
         self._oauth_adapters: dict[str, OAuthProvider] = dict(oauth_adapters or {})
 
     def profile(
         self, provider_identifier: str, *, environment_variables: tuple[str, ...] = ()
     ) -> ProviderAuthProfile:
         provider = provider_identifier.strip().lower()
-        existing = self._profiles.get(provider)
-        if existing is not None:
-            return existing
-        if self._catalogue is not None:
-            record = self._catalogue.provider(provider)
-            if record is not None:
-                override = _AUTH_PROFILE_OVERRIDES.get(provider)
-                if override is not None:
-                    return replace(
-                        override,
-                        environment_variables=(
-                            override.environment_variables
-                            if override.method == "environment"
-                            else override.environment_variables or record.environment_variables
-                        ),
-                        default_base_url=override.default_base_url or record.api_base,
-                    )
-                return provider_auth_profile(
-                    record.identifier,
-                    environment_variables=record.environment_variables,
-                    default_base_url=record.api_base,
-                )
-        return provider_auth_profile(provider, environment_variables=environment_variables)
-
-    def _configured(self, provider_identifier: str, profile: ProviderAuthProfile) -> Any:
-        credential_identifier = profile.credential_identifier or profile.identifier
-        value = self._values.get(credential_identifier)
-        if value is None:
-            value = self._values.get(provider_identifier)
-        return _resolve_value(value)
+        if not provider:
+            raise ValueError("provider identifier cannot be empty")
+        catalogue_record = (
+            self._catalogue.provider(provider) if self._catalogue is not None else None
+        )
+        profile = ProviderAuthProfile(
+            identifier=provider,
+            environment_variables=(
+                catalogue_record.environment_variables
+                if catalogue_record is not None
+                else environment_variables
+            ),
+            default_base_url=catalogue_record.api_base if catalogue_record is not None else "",
+            method="api_key",
+        )
+        override = _AUTH_PROFILE_OVERRIDES.get(provider)
+        if override is not None:
+            profile = replace(profile, **override)
+        return profile
 
     def resolve(
         self,
@@ -1002,18 +928,17 @@ class ProviderAuthentication:
     ) -> ApiKeyResolution:
         profile = self.profile(provider_identifier, environment_variables=environment_variables)
         provider = profile.identifier
-        configured = self._configured(provider_identifier, profile)
+        configured = self._values.get(profile.credential_identifier or provider)
+        if configured is None:
+            configured = self._values.get(provider_identifier)
+        configured = _resolve_value(configured)
         environment: dict[str, str] = {}
-        key = (
-            self._api_keys.get(profile.credential_identifier, "")
-            or self._api_keys.get(provider, "")
-            or self._api_keys.get(provider_identifier, "")
-        )
-        source = "configured" if key else "none"
-        if not key and isinstance(configured, str):
+        key = ""
+        source = "none"
+        if isinstance(configured, str):
             key = configured.strip()
             source = "configured" if key else "none"
-        elif not key and isinstance(configured, Mapping):
+        elif isinstance(configured, Mapping):
             raw_key = configured.get("api_key") or configured.get("apiKey")
             if raw_key:
                 key = str(raw_key).strip()
@@ -1025,14 +950,13 @@ class ProviderAuthentication:
             }
             if environment and source == "none":
                 source = "configured"
-        base = self._api_bases.get(provider, "") or self._api_bases.get(provider_identifier, "")
         if not key and not environment and profile.anonymous_api_key:
             key = profile.anonymous_api_key
             source = "anonymous"
         return ApiKeyResolution(
             provider=provider,
             api_key=key,
-            api_base=base or profile.default_base_url,
+            api_base=profile.default_base_url,
             headers=dict(profile.headers),
             environment=environment,
             method=profile.method,
@@ -1123,60 +1047,6 @@ class ProviderAuthentication:
             state=state,
             code_verifier=code_verifier,
         )
-
-    def serialize_token(self, provider_identifier: str, tokens: OAuthTokens) -> Mapping[str, Any]:
-        provider = provider_identifier.strip().lower()
-        adapter = self._oauth_adapters.get(provider)
-        if adapter is None:
-            raise AuthenticationError(f"{provider_identifier!r} has no registered OAuth adapter.")
-        return adapter.serialize_tokens(tokens)
-
-    def deserialize_token(
-        self, provider_identifier: str, payload: Mapping[str, Any]
-    ) -> OAuthTokens:
-        provider = provider_identifier.strip().lower()
-        adapter = self._oauth_adapters.get(provider)
-        if adapter is None:
-            raise AuthenticationError(f"{provider_identifier!r} has no registered OAuth adapter.")
-        return adapter.deserialize_tokens(payload)
-
-    def register_oauth(
-        self,
-        provider_identifier: str,
-        configuration: OAuthConfiguration,
-        *,
-        flow_factory: Callable[[dict[str, Any]], LoginFlow] | None = None,
-        token_parser: Callable[[Mapping[str, Any], OAuthTokens | None], OAuthTokens] | None = None,
-        header_builder: Callable[[OAuthTokens, str, str], Mapping[str, str]] | None = None,
-        authorization_factory: Callable[..., HostedAuthorization] | None = None,
-        token_serializer: Callable[[OAuthTokens], Mapping[str, Any]] | None = None,
-        token_deserializer: Callable[[Mapping[str, Any]], OAuthTokens] | None = None,
-    ) -> None:
-        provider = provider_identifier.strip().lower()
-        if not provider:
-            raise ValueError("provider identifier cannot be empty")
-        self._oauth_adapters[provider] = OAuthAdapter(
-            provider,
-            configuration,
-            flow_factory=flow_factory,
-            token_parser=token_parser,
-            header_builder=header_builder,
-            authorization_factory=authorization_factory,
-            token_serializer=token_serializer,
-            token_deserializer=token_deserializer,
-        )
-
-    def sign_out(self, provider_identifier: str) -> None:
-        profile = self.profile(provider_identifier)
-        self._values.pop(profile.credential_identifier or profile.identifier, None)
-
-    def save_api_key(self, provider_identifier: str, api_key: str) -> None:
-        profile = self.profile(provider_identifier)
-        credential_identifier = profile.credential_identifier or profile.identifier
-        if api_key.strip():
-            self._values[credential_identifier] = api_key.strip()
-        else:
-            self._values.pop(credential_identifier, None)
 
     async def valid_token(self, provider_identifier: str) -> OAuthTokens:
         provider = provider_identifier.strip().lower()
