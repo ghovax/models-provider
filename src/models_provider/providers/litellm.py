@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
+from uuid import uuid4
 
 import litellm
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -52,6 +53,19 @@ _LITELLM_ENVIRONMENT_PARAMETERS = {
     "AWS_BEARER_TOKEN_BEDROCK": "aws_bearer_token",
 }
 
+_OPENCODE_USER_AGENT = "opencode/1.18.29"
+_OPENCODE_CLIENT = "cli"
+_OPENCODE_MAXIMUM_OUTPUT_TOKENS = 32_000
+
+
+@dataclass(frozen=True, slots=True)
+class OpenCodeRequestContext:
+    """Stable session identity and per-request identity for OpenCode."""
+
+    session_id: str
+    project_id: str = ""
+    parent_session_id: str = ""
+
 
 class LiteLLMChatModel(BaseChatModel):
     """A provider-qualified model usable by any LangChain-compatible application."""
@@ -59,10 +73,16 @@ class LiteLLMChatModel(BaseChatModel):
     model: str
     api_key: SecretStr | None = None
     api_base: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    maximum_tokens: int | None = None
+    supports_temperature: bool = True
     timeout: float | None = 300.0
+    reasoning_effort: str | None = None
     context_length: int = 0
     default_headers: dict[str, str] = Field(default_factory=dict)
     request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    request_context: OpenCodeRequestContext | None = None
 
     provider_identifier: str = ""
     provider_environment_variables: tuple[str, ...] = ()
@@ -97,7 +117,10 @@ class LiteLLMChatModel(BaseChatModel):
         return item
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
+        request_context = kwargs.pop("opencode_request_context", None)
         params: dict[str, Any] = {"model": self.model}
+        if self.supports_temperature and self.temperature is not None:
+            params["temperature"] = self.temperature
         resolved = None
         if self._authentication is not None and self.provider_identifier:
             resolved = self._authentication.resolve(
@@ -134,9 +157,45 @@ class LiteLLMChatModel(BaseChatModel):
             params["api_base"] = self.api_base
         if self.timeout is not None:
             params["timeout"] = self.timeout
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        if self.top_p is not None:
+            params["top_p"] = self.top_p
+        if self.maximum_tokens is not None:
+            params["max_tokens"] = self.maximum_tokens
         headers = dict(self.default_headers)
         if resolved is not None:
             headers = {**resolved.headers, **headers}
+        is_opencode = self.provider_identifier.lower() in {"opencode", "opencode-go"}
+        if is_opencode:
+            context = request_context or self.request_context
+            if context is None or not context.session_id.strip():
+                raise AuthenticationError("OpenCode models require a request context.")
+            request_id = uuid4().hex
+            headers.update(
+                {
+                    "User-Agent": _OPENCODE_USER_AGENT,
+                    "x-opencode-client": _OPENCODE_CLIENT,
+                    "x-opencode-session": context.session_id.strip(),
+                    "x-opencode-request": request_id,
+                }
+            )
+            if context.project_id.strip():
+                headers["x-opencode-project"] = context.project_id.strip()
+            if context.parent_session_id.strip():
+                headers["x-parent-session-id"] = context.parent_session_id.strip()
+            api_key = str(params.get("api_key") or "").strip()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            model_name = self.model.rsplit("/", 1)[-1].lower()
+            if self.provider_identifier.lower() == "opencode" and model_name in {
+                "kimi-k2-thinking",
+                "glm-4.6",
+            }:
+                params["extra_body"] = {
+                    **(params.get("extra_body") or {}),
+                    "chat_template_args": {"enable_thinking": True},
+                }
         if headers:
             params["extra_headers"] = headers
         params.update(
@@ -242,6 +301,56 @@ class LiteLLM:
         timeout_seconds: float | None,
         request_parameters: Mapping[str, Any],
     ) -> BaseChatModel:
+        provider_identifier = provider.identifier.lower()
+        is_opencode = provider_identifier in {"opencode", "opencode-go"}
+        model_name = record.model.lower()
+        model_identifier = (
+            f"openai/responses/{record.model}"
+            if is_opencode and provider.npm == "@ai-sdk/openai"
+            else f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}"
+        )
+        temperature: float | None = None
+        top_p: float | None = None
+        maximum_tokens: int | None = None
+        if is_opencode:
+            if "claude" not in model_name:
+                if any(
+                    marker in model_name
+                    for marker in (
+                        "north-mini-code",
+                        "gemini-2.5",
+                        "gemini-3-",
+                        "glm-4.6",
+                        "glm-4.7",
+                        "minimax-m2",
+                    )
+                ):
+                    temperature = 1.0
+                elif "kimi-k2" in model_name:
+                    temperature = (
+                        1.0
+                        if any(
+                            marker in model_name for marker in ("thinking", "k2.", "k2p", "k2-5")
+                        )
+                        else 0.6
+                    )
+            if any(
+                marker in model_name
+                for marker in (
+                    "gemini-2.5",
+                    "gemini-3-",
+                    "minimax-m2",
+                    "kimi-k2.5",
+                    "kimi-k2p5",
+                    "kimi-k2-5",
+                    "deepseek-v4-flash",
+                )
+            ):
+                top_p = 0.95
+            maximum_tokens = (
+                min(record.output_limit, _OPENCODE_MAXIMUM_OUTPUT_TOKENS) or _OPENCODE_MAXIMUM_OUTPUT_TOKENS
+            )
+
         resolution = authentication.resolve(
             provider.identifier,
             environment_variables=provider.environment_variables,
@@ -249,10 +358,15 @@ class LiteLLM:
         if not resolution.available:
             raise AuthenticationError(f"No configured access is available for {record.provider!r}.")
         model = LiteLLMChatModel(
-            model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
+            model=model_identifier,
             api_base=provider.api_base or None,
+            temperature=temperature,
+            top_p=top_p,
+            maximum_tokens=maximum_tokens,
+            supports_temperature=record.temperature if is_opencode else True,
             timeout=timeout_seconds,
             context_length=record.context_length,
+            request_context=OpenCodeRequestContext(session_id=uuid4().hex) if is_opencode else None,
             provider_identifier=provider.identifier,
             provider_environment_variables=provider.environment_variables,
             request_parameters=dict(request_parameters),
