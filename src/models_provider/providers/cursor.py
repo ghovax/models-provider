@@ -15,7 +15,7 @@ import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable
 
 import httpx
 from langchain_core.language_models import BaseChatModel
@@ -670,14 +670,13 @@ class CursorChatModel(BaseChatModel):
     """LangChain model backed by Cursor's native agent stream."""
 
     model: str
-    model_type: ClassVar[str] = "cursor"
     context_length: int = 0
     timeout: float | None = 300.0
     authentication: ProviderAuthentication = Field(exclude=True)
 
     @property
     def _llm_type(self) -> str:
-        return self.model_type
+        return "cursor"
 
     def context_window(self) -> int:
         return max(0, int(self.context_length or 0))
