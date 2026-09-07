@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
 
-from .auth import OAuthAuthorization
 from .usage import ModelUsage
+
+if TYPE_CHECKING:
+    from .auth import OAuthAuthorization
 
 __all__ = [
     "ModelUsage",
@@ -28,13 +30,6 @@ def _positive_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
-
-
-def _number(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _texts(value: Any) -> tuple[str, ...]:
@@ -118,9 +113,12 @@ class ModelRecord:
         model_id = _text(payload.get("id")) or model
         normalized_cost: dict[str, float] = {}
         for name, value in costs.items():
-            parsed = _number(value)
-            if parsed is not None:
-                normalized_cost[str(name)] = parsed
+            if not isinstance(value, (int, float, str)):
+                continue
+            try:
+                normalized_cost[str(name)] = float(value)
+            except ValueError:
+                continue
         values.update(
             {
                 "identifier": f"{provider}/{model_id}",

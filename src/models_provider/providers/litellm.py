@@ -193,8 +193,13 @@ class LiteLLMChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _generate(
-        self, messages: Sequence[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
     ) -> ChatResult:
+        del run_manager
         parameters = self._parameters(stop=stop, **kwargs)
         response = litellm.completion(
             messages=[self._message(message) for message in messages], **parameters
@@ -202,8 +207,13 @@ class LiteLLMChatModel(BaseChatModel):
         return self._response(response)
 
     async def _agenerate(
-        self, messages: Sequence[BaseMessage], stop: list[str] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
     ) -> ChatResult:
+        del run_manager
         if self._authentication is not None and self.provider_identifier:
             await self._authentication.ensure_valid(self.provider_identifier)
         parameters = self._parameters(stop=stop, **kwargs)

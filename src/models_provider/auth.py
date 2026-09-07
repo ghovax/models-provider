@@ -14,7 +14,7 @@ import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, cast, runtime_checkable
 
 import httpx
 
@@ -181,6 +181,39 @@ def _oauth_tokens_from_payload(
     )
 
 
+def _oauth_request_kwargs(
+    configuration: OAuthConfiguration, data: Mapping[str, str]
+) -> dict[str, Any]:
+    request_data = dict(data)
+    request_kwargs: dict[str, Any] = {"data": request_data}
+    if configuration.token_endpoint_auth_method == "client_secret_post":
+        request_data["client_secret"] = configuration.client_secret
+    elif configuration.token_endpoint_auth_method == "client_secret_basic":
+        request_kwargs["auth"] = (configuration.client_id, configuration.client_secret)
+        request_data.pop("client_id", None)
+    return request_kwargs
+
+
+def _oauth_authorize_url(configuration: OAuthConfiguration, state: str, code_verifier: str) -> str:
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    parameters = {
+        **configuration.authorization_parameters,
+        "response_type": "code",
+        "client_id": configuration.client_id,
+        "redirect_uri": configuration.redirect_uri,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    if configuration.scopes:
+        parameters["scope"] = " ".join(configuration.scopes)
+    return f"{configuration.authorization_url}?{urllib.parse.urlencode(parameters)}"
+
+
 class OAuthAuthorizationRequest:
     """Provider-neutral authorization-code request for a host-owned callback."""
 
@@ -226,23 +259,7 @@ class OAuthAuthorizationRequest:
 
     @property
     def authorize_url(self) -> str:
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(self._code_verifier.encode()).digest())
-            .rstrip(b"=")
-            .decode()
-        )
-        parameters = {
-            **self.configuration.authorization_parameters,
-            "response_type": "code",
-            "client_id": self.configuration.client_id,
-            "redirect_uri": self.configuration.redirect_uri,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": self._state,
-        }
-        if self.configuration.scopes:
-            parameters["scope"] = " ".join(self.configuration.scopes)
-        return f"{self.configuration.authorization_url}?{urllib.parse.urlencode(parameters)}"
+        return _oauth_authorize_url(self.configuration, self._state, self._code_verifier)
 
     async def exchange(self, code: str = "") -> OAuthTokens:
         if not code.strip():
@@ -255,15 +272,10 @@ class OAuthAuthorizationRequest:
             "client_id": self.configuration.client_id,
             "code_verifier": self._code_verifier,
         }
-        auth = None
-        if self.configuration.token_endpoint_auth_method == "client_secret_post":
-            data["client_secret"] = self.configuration.client_secret
-        elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-            auth = (self.configuration.client_id, self.configuration.client_secret)
-            data.pop("client_id", None)
+        request_kwargs = _oauth_request_kwargs(self.configuration, data)
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(self.configuration.token_url, data=data, auth=auth)
+                response = await client.post(self.configuration.token_url, **request_kwargs)
                 response.raise_for_status()
                 payload = response.json()
             if not isinstance(payload, Mapping):
@@ -299,23 +311,7 @@ class OAuthLoginFlow:
 
     @property
     def authorize_url(self) -> str:
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(self._verifier.encode()).digest())
-            .rstrip(b"=")
-            .decode()
-        )
-        parameters = {
-            **self.configuration.authorization_parameters,
-            "response_type": "code",
-            "client_id": self.configuration.client_id,
-            "redirect_uri": self.configuration.redirect_uri,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "state": self._state,
-        }
-        if self.configuration.scopes:
-            parameters["scope"] = " ".join(self.configuration.scopes)
-        return f"{self.configuration.authorization_url}?{urllib.parse.urlencode(parameters)}"
+        return _oauth_authorize_url(self.configuration, self._state, self._verifier)
 
     async def start(self) -> None:
         redirect = urllib.parse.urlparse(self.configuration.redirect_uri)
@@ -330,7 +326,7 @@ class OAuthLoginFlow:
         flow = self
 
         class CallbackHandler(BaseHTTPRequestHandler):
-            def log_message(self, format_string: str, *arguments: object) -> None:
+            def log_message(self, format: str, *arguments: object) -> None:
                 return
 
             def do_GET(self) -> None:
@@ -382,15 +378,9 @@ class OAuthLoginFlow:
             await self.close()
 
     async def _token_request(self, data: Mapping[str, str]) -> Mapping[str, Any]:
-        request_data = dict(data)
-        auth = None
-        if self.configuration.token_endpoint_auth_method == "client_secret_post":
-            request_data["client_secret"] = self.configuration.client_secret
-        elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-            auth = (self.configuration.client_id, self.configuration.client_secret)
-            request_data.pop("client_id", None)
+        request_kwargs = _oauth_request_kwargs(self.configuration, data)
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(self.configuration.token_url, data=request_data, auth=auth)
+            response = await client.post(self.configuration.token_url, **request_kwargs)
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, Mapping):
@@ -437,20 +427,16 @@ class DeviceLoginFlow:
         }
         if self.configuration.scopes:
             data["scope"] = " ".join(self.configuration.scopes)
-        auth = None
-        if self.configuration.token_endpoint_auth_method == "client_secret_post":
-            data["client_secret"] = self.configuration.client_secret
-        elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-            auth = (self.configuration.client_id, self.configuration.client_secret)
-            data.pop("client_id", None)
+        request_kwargs = _oauth_request_kwargs(self.configuration, data)
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                self.configuration.device_authorization_url, data=data, auth=auth
+                self.configuration.device_authorization_url, **request_kwargs
             )
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, Mapping) or not payload.get("device_code"):
             raise AuthenticationError("OAuth returned an invalid device authorization response.")
+        payload = cast(Mapping[str, Any], payload)
         self._device_code = str(payload["device_code"])
         self._verification_url = str(
             payload.get("verification_uri_complete")
@@ -458,8 +444,12 @@ class DeviceLoginFlow:
             or payload.get("verification_url")
             or ""
         )
-        self._interval = max(1.0, float(payload.get("interval") or 5.0))
-        self._expires_at = time.monotonic() + max(1.0, float(payload.get("expires_in") or 600.0))
+        try:
+            self._interval = max(1.0, float(payload.get("interval") or 5.0))
+            expires_in = max(1.0, float(payload.get("expires_in") or 600.0))
+        except (TypeError, ValueError) as error:
+            raise AuthenticationError("OAuth returned invalid device timing values.") from error
+        self._expires_at = time.monotonic() + expires_in
 
     async def wait(self, timeout: float = 600.0) -> OAuthTokens:  # noqa: ASYNC109
         if not self._device_code:
@@ -474,13 +464,10 @@ class DeviceLoginFlow:
                     "device_code": self._device_code,
                     "client_id": self.configuration.client_id,
                 }
-                auth = None
-                if self.configuration.token_endpoint_auth_method == "client_secret_post":
-                    data["client_secret"] = self.configuration.client_secret
-                elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-                    auth = (self.configuration.client_id, self.configuration.client_secret)
-                    data.pop("client_id", None)
-                response = await client.post(self.configuration.token_url, data=data, auth=auth)
+                response = await client.post(
+                    self.configuration.token_url,
+                    **_oauth_request_kwargs(self.configuration, data),
+                )
                 if response.is_success:
                     payload = response.json()
                     if not isinstance(payload, Mapping):
@@ -492,9 +479,10 @@ class DeviceLoginFlow:
                     return tokens
                 try:
                     error_payload = response.json()
-                    error = (
+                    raw_error = (
                         error_payload.get("error", "") if isinstance(error_payload, Mapping) else ""
                     )
+                    error = raw_error if isinstance(raw_error, str) else ""
                 except (TypeError, ValueError):
                     error = ""
                 if error == "authorization_pending":
@@ -689,22 +677,11 @@ class OAuthAdapter:
                 return None
         return None
 
-    async def _request_token(
-        self, data: Mapping[str, str], *, auth: tuple[str, str] | None = None
-    ) -> Mapping[str, Any]:
-        request_data = dict(data)
-        request_auth = auth
-        if self.configuration.token_endpoint_auth_method == "client_secret_post":
-            request_data["client_secret"] = self.configuration.client_secret
-        elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-            request_auth = (
-                self.configuration.client_id,
-                self.configuration.client_secret,
-            )
-            request_data.pop("client_id", None)
+    async def _request_token(self, data: Mapping[str, str]) -> Mapping[str, Any]:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                self.configuration.token_url, data=request_data, auth=request_auth
+                self.configuration.token_url,
+                **_oauth_request_kwargs(self.configuration, data),
             )
             response.raise_for_status()
             payload = response.json()
