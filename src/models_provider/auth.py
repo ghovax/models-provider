@@ -669,14 +669,8 @@ class OAuthAdapter:
                 "refresh_token": current.refresh_token,
                 "client_id": self.configuration.client_id,
             }
-            auth = None
-            if self.configuration.token_endpoint_auth_method == "client_secret_post":
-                data["client_secret"] = self.configuration.client_secret
-            elif self.configuration.token_endpoint_auth_method == "client_secret_basic":
-                auth = (self.configuration.client_id, self.configuration.client_secret)
-                data.pop("client_id", None)
             try:
-                payload = await self._request_token(data, auth=auth)
+                payload = await self._request_token(data)
                 refreshed = self._token_parser(payload, current)
             except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
                 raise AuthenticationError(

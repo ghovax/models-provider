@@ -67,8 +67,6 @@ class Models:
         """Create a ready-to-use model from one provider-qualified identifier."""
         if "/" not in model_identifier:
             raise ValueError("model_identifier must have the form 'provider/model'")
-        provider_identifier, _model_suffix = model_identifier.split("/", 1)
-        provider_identifier = provider_identifier.strip().lower()
         record = self._catalogue.require(model_identifier)
 
         values = (

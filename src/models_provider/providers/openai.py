@@ -13,7 +13,6 @@ import time
 import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
-from copy import deepcopy
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, AsyncIterator, Callable, cast
@@ -38,17 +37,17 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 from websockets.asyncio.client import connect
 
-from ..auth import ProviderAuthentication
 from ..auth import (
     OAuthAdapter,
     OAuthAuthorizationRequest,
     OAuthConfiguration,
     OAuthProvider,
     OAuthTokens,
+    ProviderAuthentication,
 )
 from ..catalogue import ModelRecord, ProviderRecord
 from ..errors import AuthenticationError, ContextWindowError
-from .litellm import LiteLLMChatModel, _SDK_PREFIXES
+from .litellm import LiteLLM
 
 
 CONTEXT_OVERFLOW_CODES = frozenset(
@@ -83,14 +82,6 @@ def _text(message: BaseMessage) -> str:
     return "".join(parts)
 
 
-def _reasoning_items(message: BaseMessage, model: str) -> list[dict[str, Any]]:
-    additional = getattr(message, "additional_kwargs", {}) or {}
-    if additional.get("reasoning_model") != model:
-        return []
-    items = additional.get("reasoning_items")
-    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
-
-
 class OpenAIAccountResponsesModel(BaseChatModel):
     """A model backed by the OpenAI account subscription Codex Responses endpoint."""
 
@@ -100,15 +91,14 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     timeout: float | None = 300.0
     credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True)
     request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    authentication: ProviderAuthentication | None = Field(default=None, exclude=True)
 
     @property
     def _llm_type(self) -> str:
         return "openai-account-responses"
 
     def context_window(self) -> int:
-        live = cached_openai_models().get(self.model)
-        live_context = int(live.get("context") or 0) if isinstance(live, Mapping) else 0
-        return max(live_context, max(0, int(self.context_length or 0)))
+        return max(0, int(self.context_length or 0))
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
@@ -152,7 +142,16 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             payload["instructions"] = instructions
         tools = parameters.get("tools")
         if tools:
-            payload["tools"] = [self.responses_tool(tool) for tool in tools]
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "name": tool.get("function", tool).get("name"),
+                    "description": tool.get("function", tool).get("description", ""),
+                    "parameters": tool.get("function", tool).get("parameters", {}),
+                    "strict": False,
+                }
+                for tool in tools
+            ]
         for key in (
             "temperature",
             "top_p",
@@ -205,7 +204,11 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 )
                 continue
             if isinstance(message, AIMessage):
-                items.extend(_reasoning_items(message, self.model))
+                additional = getattr(message, "additional_kwargs", {}) or {}
+                if additional.get("reasoning_model") == self.model:
+                    reasoning_items = additional.get("reasoning_items")
+                    if isinstance(reasoning_items, list):
+                        items.extend(item for item in reasoning_items if isinstance(item, dict))
                 text = _text(message)
                 if text:
                     items.append(
@@ -238,31 +241,12 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         return instructions, items
 
-    @staticmethod
-    def responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
-        function = tool.get("function", tool)
-        return {
-            "type": "function",
-            "name": function.get("name"),
-            "description": function.get("description", ""),
-            "parameters": function.get("parameters", {}),
-            "strict": False,
-        }
-
     async def _headers(self) -> dict[str, str]:
-        return request_openai_account_headers(
-            await valid_openai_account_tokens(self.credential_values), self.session_id
+        if self.authentication is None:
+            raise AuthenticationError("OpenAI account authentication is not configured.")
+        return await self.authentication.request_headers(
+            "openai", session_identifier=self.session_id
         )
-
-    @staticmethod
-    def _websocket_url() -> str:
-        parsed = urlsplit(RESPONSES_URL)
-        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
-        return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
-
-    @staticmethod
-    def _websocket_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        return {"type": "response.create", **payload}
 
     @staticmethod
     def _http_error(status: int, body: str) -> Exception:
@@ -287,9 +271,37 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     ) -> ChatGenerationChunk | None:
         event_type = data.get("type", "")
         if event_type == "response.output_text.delta":
-            return cls._chunk(content_block=cls._text_content_block(data))
+            output_index = int(data.get("output_index", 0) or 0)
+            content_index = int(data.get("content_index", 0) or 0)
+            index = (output_index + content_index) * (output_index + content_index + 1) // 2
+            index += content_index
+            return cls._chunk(
+                content_block=TextContentBlock(
+                    type="text",
+                    text=str(data.get("delta", "")),
+                    id=str(
+                        data.get("item_id")
+                        or f"response-output-{int(data.get('output_index', 0) or 0)}"
+                    ),
+                    index=index,
+                )
+            )
         if event_type in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-            return cls._chunk(content_block=cls._reasoning_content_block(data))
+            output_index = int(data.get("output_index", 0) or 0)
+            content_index = int(data.get("summary_index", data.get("content_index", 0)))
+            index = (output_index + content_index) * (output_index + content_index + 1) // 2
+            index += content_index
+            return cls._chunk(
+                content_block=ReasoningContentBlock(
+                    type="reasoning",
+                    reasoning=str(data.get("delta", "")),
+                    id=str(
+                        data.get("item_id")
+                        or f"response-output-{int(data.get('output_index', 0) or 0)}"
+                    ),
+                    index=index,
+                )
+            )
         if event_type == "response.output_item.done":
             item = data.get("item") or {}
             if item.get("type") == "reasoning" and item.get("encrypted_content"):
@@ -329,7 +341,31 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         if event_type == "response.completed":
             response = data.get("response") or {}
-            usage = cls._usage(response.get("usage"))
+            raw_usage = response.get("usage")
+            usage = None
+            if raw_usage:
+                input_tokens = int(raw_usage.get("input_tokens") or 0)
+                output_tokens = int(raw_usage.get("output_tokens") or 0)
+                total_tokens = int(raw_usage.get("total_tokens") or (input_tokens + output_tokens))
+                if input_tokens or output_tokens or total_tokens:
+                    usage = {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": total_tokens,
+                    }
+                    details = raw_usage.get("input_tokens_details") or {}
+                    cached = int(details.get("cached_tokens") or 0)
+                    written = int(details.get("cache_write_tokens") or 0)
+                    if cached or written:
+                        usage["input_token_details"] = {
+                            "cache_read": cached,
+                            "cache_creation": written,
+                        }
+                    reasoning = int(
+                        (raw_usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0
+                    )
+                    if reasoning:
+                        usage["output_token_details"] = {"reasoning": reasoning}
             return ChatGenerationChunk(
                 message=AIMessageChunk(content="", usage_metadata=usage),
                 generation_info={
@@ -352,41 +388,6 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         return None
 
     @staticmethod
-    def _content_block_index(data: dict[str, Any], block_type: str) -> int:
-        output_index = int(data.get("output_index", 0) or 0)
-        content_index = int(
-            data.get("summary_index", data.get("content_index", 0))
-            if block_type == "reasoning"
-            else data.get("content_index", 0)
-        )
-        total = output_index + content_index
-        return total * (total + 1) // 2 + content_index
-
-    @staticmethod
-    def _content_block_identifier(data: dict[str, Any]) -> str:
-        return str(
-            data.get("item_id") or f"response-output-{int(data.get('output_index', 0) or 0)}"
-        )
-
-    @classmethod
-    def _text_content_block(cls, data: dict[str, Any]) -> TextContentBlock:
-        return TextContentBlock(
-            type="text",
-            text=str(data.get("delta", "")),
-            id=cls._content_block_identifier(data),
-            index=cls._content_block_index(data, "text"),
-        )
-
-    @classmethod
-    def _reasoning_content_block(cls, data: dict[str, Any]) -> ReasoningContentBlock:
-        return ReasoningContentBlock(
-            type="reasoning",
-            reasoning=str(data.get("delta", "")),
-            id=cls._content_block_identifier(data),
-            index=cls._content_block_index(data, "reasoning"),
-        )
-
-    @staticmethod
     def _chunk(
         content_block: ContentBlock | None = None,
         tool_call_chunk: ToolCallChunk | None = None,
@@ -406,33 +407,6 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         )
 
-    @staticmethod
-    def _usage(usage: Any) -> Any:
-        if not usage:
-            return None
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
-        if not (input_tokens or output_tokens or total_tokens):
-            return None
-        metadata: dict[str, Any] = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-        }
-        details = usage.get("input_tokens_details") or {}
-        cached = int(details.get("cached_tokens") or 0)
-        written = int(details.get("cache_write_tokens") or 0)
-        if cached or written:
-            metadata["input_token_details"] = {
-                "cache_read": cached,
-                "cache_creation": written,
-            }
-        reasoning = int((usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0)
-        if reasoning:
-            metadata["output_token_details"] = {"reasoning": reasoning}
-        return metadata
-
     async def _astream_websocket(
         self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
     ) -> AsyncIterator[ChatGenerationChunk]:
@@ -440,8 +414,10 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         websocket_headers.pop("Content-Type", None)
         websocket_headers.pop("Accept", None)
         websocket_headers["OpenAI-Beta"] = RESPONSES_WEBSOCKET_BETA
+        parsed = urlsplit(RESPONSES_URL)
+        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
         websocket = connect(
-            self._websocket_url(),
+            urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)),
             additional_headers=websocket_headers,
             user_agent_header=websocket_headers.get("User-Agent"),
             open_timeout=self.timeout,
@@ -454,7 +430,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             raise _ResponsesWebSocketUnavailable(str(error)) from error
         try:
             await connection.send(
-                json.dumps(self._websocket_payload(payload), separators=(",", ":"))
+                json.dumps({"type": "response.create", **payload}, separators=(",", ":"))
             )
             async for message in connection:
                 if isinstance(message, bytes):
@@ -486,7 +462,6 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 if response.status_code >= 400:
                     body = (await response.aread()).decode("utf-8", "replace")
                     raise self._http_error(response.status_code, body)
-                capture_usage_headers(response.headers)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -579,11 +554,11 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        tokens = openai_account_tokens(self.credential_values)
+        tokens = OpenAIAccountTokens.from_values(self.credential_values)
         if not isinstance(tokens, OpenAIAccountTokens) or tokens.is_expired():
             raise AuthenticationError("Not signed in to OpenAI (or the session expired).")
         payload = self.build_payload(messages, stream=True, **kwargs)
-        headers = request_openai_account_headers(tokens, self.session_id)
+        headers = OpenAIAccountTokens.request_headers(tokens, self.session_id)
         chunks: list[AIMessageChunk] = []
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", RESPONSES_URL, json=payload, headers=headers) as response:
@@ -636,23 +611,6 @@ OPENAI_OAUTH_CONFIGURATION = OAuthConfiguration(
 )
 
 
-_openai_models: dict[str, dict[str, Any]] = {}
-_usage_snapshot: dict[str, Any] | None = None
-
-
-def _b64url_decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-def _jwt_claims(token: str) -> dict[str, Any]:
-    try:
-        _, payload, _ = token.split(".")
-        decoded = json.loads(_b64url_decode(payload))
-        return decoded if isinstance(decoded, dict) else {}
-    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
-        return {}
-
-
 @dataclass(frozen=True, slots=True, init=False)
 class OpenAIAccountTokens(OAuthTokens):
     """OpenAI account subscription credentials."""
@@ -681,114 +639,146 @@ class OpenAIAccountTokens(OAuthTokens):
     def account(self) -> str:
         return self.email or self.account_id
 
-
-_openai_account_refresh_lock = asyncio.Lock()
-
-
-def _openai_account_from_payload(
-    payload: Mapping[str, Any], previous: OpenAIAccountTokens | None = None
-) -> OpenAIAccountTokens:
-    if not isinstance(payload, Mapping):
-        raise AuthenticationError("OpenAI returned an invalid account token response.")
-    access_token = str(payload.get("access_token") or "")
-    if not access_token:
-        raise AuthenticationError("OpenAI returned no account access token.")
-    id_token = str(payload.get("id_token") or (previous.id_token if previous else ""))
-    claims = _jwt_claims(id_token)
-    auth_claim = claims.get("https://api.openai.com/auth")
-    account_id = auth_claim.get("chatgpt_account_id", "") if isinstance(auth_claim, dict) else ""
-    return OpenAIAccountTokens(
-        access_token=access_token,
-        refresh_token=str(
-            payload.get("refresh_token") or (previous.refresh_token if previous else "")
-        ),
-        id_token=id_token,
-        account_id=str(account_id or (previous.account_id if previous else "")),
-        email=str(claims.get("email") or (previous.email if previous else "")),
-        expires_at=time.time() + float(payload.get("expires_in") or 3600),
-    )
-
-
-def _save(provider: str, credentials: OAuthTokens, values: dict[str, Any]) -> None:
-    values[provider] = credentials
-
-
-def openai_account_tokens_to_mapping(tokens: OpenAIAccountTokens) -> dict[str, Any]:
-    """Return the provider-owned persisted representation of an OpenAI account session."""
-    return {
-        "access_token": tokens.access_token,
-        "refresh_token": tokens.refresh_token,
-        "id_token": tokens.id_token,
-        "account_id": tokens.account_id,
-        "email": tokens.email,
-        "expires_at": tokens.expires_at,
-    }
-
-
-def openai_account_tokens_from_mapping(payload: Mapping[str, Any]) -> OpenAIAccountTokens:
-    """Rebuild an OpenAI account session from a persisted provider representation."""
-    if not isinstance(payload, Mapping):
-        raise AuthenticationError("Stored OpenAI account credentials are invalid.")
-    access_token = str(payload.get("access_token") or "")
-    if not access_token:
-        raise AuthenticationError("Stored OpenAI account credentials contain no access token.")
-    try:
-        expires_at = float(payload.get("expires_at") or 0.0)
-    except (TypeError, ValueError) as error:
-        raise AuthenticationError(
-            "Stored OpenAI account credentials have an invalid expiry."
-        ) from error
-    return OpenAIAccountTokens(
-        access_token=access_token,
-        refresh_token=str(payload.get("refresh_token") or ""),
-        id_token=str(payload.get("id_token") or ""),
-        account_id=str(payload.get("account_id") or ""),
-        email=str(payload.get("email") or ""),
-        expires_at=expires_at,
-    )
-
-
-def openai_account_tokens(values: dict[str, Any]) -> OpenAIAccountTokens | None:
-    value = values.get("openai")
-    if isinstance(value, OpenAIAccountTokens):
-        return value
-    if isinstance(value, Mapping):
+    @classmethod
+    def from_payload(
+        cls, payload: Mapping[str, Any], previous: OAuthTokens | None = None
+    ) -> OpenAIAccountTokens:
+        if not isinstance(payload, Mapping):
+            raise AuthenticationError("OpenAI returned an invalid account token response.")
+        access_token = str(payload.get("access_token") or "")
+        if not access_token:
+            raise AuthenticationError("OpenAI returned no account access token.")
+        previous_account = previous if isinstance(previous, cls) else None
+        id_token = str(
+            payload.get("id_token") or (previous_account.id_token if previous_account else "")
+        )
         try:
-            return openai_account_tokens_from_mapping(value)
-        except AuthenticationError:
-            return None
-    return None
+            _, payload_part, _ = id_token.split(".")
+            claims = json.loads(
+                base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
+            )
+            claims = claims if isinstance(claims, dict) else {}
+        except (ValueError, TypeError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
+            claims = {}
+        auth_claim = claims.get("https://api.openai.com/auth")
+        account_id = (
+            auth_claim.get("chatgpt_account_id", "") if isinstance(auth_claim, dict) else ""
+        )
+        return cls(
+            access_token=access_token,
+            refresh_token=str(
+                payload.get("refresh_token") or (previous.refresh_token if previous else "")
+            ),
+            id_token=id_token,
+            account_id=str(account_id or (previous_account.account_id if previous_account else "")),
+            email=str(claims.get("email") or (previous_account.email if previous_account else "")),
+            expires_at=time.time() + float(payload.get("expires_in") or 3600),
+        )
 
-
-async def valid_openai_account_tokens(values: dict[str, Any]) -> OpenAIAccountTokens:
-    tokens = openai_account_tokens(values)
-    if tokens is None:
-        raise AuthenticationError("Not signed in to OpenAI.")
-    if not tokens.is_expired():
-        return tokens
-    async with _openai_account_refresh_lock:
-        current = openai_account_tokens(values) or tokens
-        if not current.is_expired():
-            return current
-        if not current.refresh_token:
-            raise AuthenticationError("OpenAI session expired; sign in again.")
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> OpenAIAccountTokens:
+        """Rebuild an OpenAI account session from its persisted representation."""
+        if not isinstance(payload, Mapping):
+            raise AuthenticationError("Stored OpenAI account credentials are invalid.")
+        access_token = str(payload.get("access_token") or "")
+        if not access_token:
+            raise AuthenticationError("Stored OpenAI account credentials contain no access token.")
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(
-                    OPENAI_TOKEN_URL,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": current.refresh_token,
-                        "client_id": OPENAI_CLIENT_ID,
-                        "scope": " ".join(OPENAI_SCOPES),
-                    },
-                )
-                response.raise_for_status()
-                refreshed = _openai_account_from_payload(response.json(), current)
-        except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
-            raise AuthenticationError(f"Could not refresh the OpenAI session: {error}") from error
-        _save("openai", refreshed, values)
-        return refreshed
+            expires_at = float(payload.get("expires_at") or 0.0)
+        except (TypeError, ValueError) as error:
+            raise AuthenticationError(
+                "Stored OpenAI account credentials have an invalid expiry."
+            ) from error
+        return cls(
+            access_token=access_token,
+            refresh_token=str(payload.get("refresh_token") or ""),
+            id_token=str(payload.get("id_token") or ""),
+            account_id=str(payload.get("account_id") or ""),
+            email=str(payload.get("email") or ""),
+            expires_at=expires_at,
+        )
+
+    @classmethod
+    def from_values(cls, values: Mapping[str, Any]) -> OpenAIAccountTokens | None:
+        value = values.get("openai")
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, Mapping):
+            try:
+                return cls.from_mapping(value)
+            except AuthenticationError:
+                return None
+        return None
+
+    @staticmethod
+    def to_mapping(tokens: OAuthTokens) -> Mapping[str, Any]:
+        if not isinstance(tokens, OpenAIAccountTokens):
+            raise AuthenticationError("OpenAI OAuth returned an invalid token type.")
+        return {
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "id_token": tokens.id_token,
+            "account_id": tokens.account_id,
+            "email": tokens.email,
+            "expires_at": tokens.expires_at,
+        }
+
+    @staticmethod
+    def request_headers(
+        tokens: OpenAIAccountTokens, session_identifier: str = ""
+    ) -> dict[str, str]:
+        """Return headers required by the OpenAI account Responses endpoint."""
+        program = os.environ.get("TERM_PROGRAM", "").strip()
+        version = os.environ.get("TERM_PROGRAM_VERSION", "").strip()
+        if program:
+            normalized = "".join(char.lower() for char in program if char not in " -_.")
+            names = {
+                "appleterminal": "Apple_Terminal",
+                "ghostty": "Ghostty",
+                "iterm": "iTerm.app",
+                "iterm2": "iTerm.app",
+                "itermapp": "iTerm.app",
+                "warp": "WarpTerminal",
+                "warpterminal": "WarpTerminal",
+                "vscode": "vscode",
+                "wezterm": "WezTerm",
+                "kitty": "kitty",
+                "alacritty": "Alacritty",
+                "konsole": "Konsole",
+                "gnometerminal": "gnome-terminal",
+                "vte": "VTE",
+                "windowsterminal": "WindowsTerminal",
+            }
+            terminal = names.get(normalized, program)
+            terminal_user_agent = f"{terminal}/{version}" if version else terminal
+        else:
+            terminal_user_agent = os.environ.get("TERM", "").strip() or "unknown"
+        if platform.system() == "Darwin":
+            operating_system = "Mac OS"
+            operating_system_version = platform.mac_ver()[0] or platform.release()
+        else:
+            operating_system = platform.system() or "unknown"
+            operating_system_version = platform.release() or "unknown"
+        architecture = platform.machine() or "unknown"
+        originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", OPENAI_ORIGINATOR)
+        user_agent = (
+            f"{originator}/{OPENAI_CLIENT_VERSION} "
+            f"({operating_system} {operating_system_version}; {architecture}) "
+            f"{terminal_user_agent}"
+        )
+        session_id = session_identifier or str(uuid.uuid4())
+        return {
+            "Authorization": f"Bearer {tokens.access_token}",
+            "ChatGPT-Account-ID": tokens.account_id,
+            "originator": originator,
+            "User-Agent": user_agent,
+            "session-id": session_id,
+            "thread-id": session_id,
+            "x-client-request-id": session_id,
+            "x-codex-window-id": f"{session_id}:0",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
 
 
 class OpenAIAccountLoginFlow:
@@ -799,7 +789,7 @@ class OpenAIAccountLoginFlow:
         self._authorization = OAuthAuthorizationRequest(
             "openai",
             OPENAI_OAUTH_CONFIGURATION,
-            token_parser=_openai_account_from_payload,
+            token_parser=OpenAIAccountTokens.from_payload,
         )
         self._server: HTTPServer | None = None
         self._captured: dict[str, str] = {}
@@ -846,7 +836,9 @@ class OpenAIAccountLoginFlow:
             if "code" not in self._captured:
                 raise AuthenticationError(self._captured.get("error", "OpenAI sign-in failed."))
             tokens = await self._authorization.exchange(self._captured["code"])
-            _save("openai", tokens, self._values)
+            if not isinstance(tokens, OpenAIAccountTokens):
+                raise AuthenticationError("OpenAI returned an invalid account token response.")
+            self._values["openai"] = tokens
             return tokens
         except (httpx.HTTPError, AuthenticationError, TypeError, ValueError) as error:
             raise AuthenticationError(f"Could not complete OpenAI sign-in: {error}") from error
@@ -859,186 +851,7 @@ class OpenAIAccountLoginFlow:
             self._server = None
 
 
-def _terminal_user_agent() -> str:
-    program = os.environ.get("TERM_PROGRAM", "").strip()
-    version = os.environ.get("TERM_PROGRAM_VERSION", "").strip()
-    if program:
-        normalized = "".join(char.lower() for char in program if char not in " -_.")
-        names = {
-            "appleterminal": "Apple_Terminal",
-            "ghostty": "Ghostty",
-            "iterm": "iTerm.app",
-            "iterm2": "iTerm.app",
-            "itermapp": "iTerm.app",
-            "warp": "WarpTerminal",
-            "warpterminal": "WarpTerminal",
-            "vscode": "vscode",
-            "wezterm": "WezTerm",
-            "kitty": "kitty",
-            "alacritty": "Alacritty",
-            "konsole": "Konsole",
-            "gnometerminal": "gnome-terminal",
-            "vte": "VTE",
-            "windowsterminal": "WindowsTerminal",
-        }
-        name = names.get(normalized, program)
-        return f"{name}/{version}" if version else name
-    return os.environ.get("TERM", "").strip() or "unknown"
-
-
-def _openai_account_user_agent() -> str:
-    if platform.system() == "Darwin":
-        operating_system = "Mac OS"
-        operating_system_version = platform.mac_ver()[0] or platform.release()
-    else:
-        operating_system = platform.system() or "unknown"
-        operating_system_version = platform.release() or "unknown"
-    architecture = platform.machine() or "unknown"
-    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", OPENAI_ORIGINATOR)
-    return (
-        f"{originator}/{OPENAI_CLIENT_VERSION} "
-        f"({operating_system} {operating_system_version}; {architecture}) "
-        f"{_terminal_user_agent()}"
-    )
-
-
-def request_openai_account_headers(
-    tokens: OpenAIAccountTokens, session_identifier: str = ""
-) -> dict[str, str]:
-    """Headers required by the OpenAI account Responses endpoint."""
-    session_id = session_identifier or str(uuid.uuid4())
-    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", OPENAI_ORIGINATOR)
-    return {
-        "Authorization": f"Bearer {tokens.access_token}",
-        "ChatGPT-Account-ID": tokens.account_id,
-        "originator": originator,
-        "User-Agent": _openai_account_user_agent(),
-        "session-id": session_id,
-        "thread-id": session_id,
-        "x-client-request-id": session_id,
-        "x-codex-window-id": f"{session_id}:0",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-
-
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
-
-MODELS_URL = "https://chatgpt.com/backend-api/codex/models"
-
-CLIENT_VERSION = "0.152.1"
-
-ORIGINATOR = "codex_cli_rs"
-
-
-def _response_models(response: httpx.Response) -> list[Mapping[str, Any]]:
-    payload = response.json()
-    if not isinstance(payload, Mapping):
-        raise ValueError("provider model response is not an object")
-    models = payload.get("models", [])
-    if not isinstance(models, list):
-        raise ValueError("provider model response has no model list")
-    return [entry for entry in models if isinstance(entry, Mapping)]
-
-
-async def fetch_openai_models(values: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    if _openai_models:
-        return deepcopy(_openai_models)
-    try:
-        tokens = await valid_openai_account_tokens(values)
-        headers = {
-            key: value
-            for key, value in request_openai_account_headers(tokens).items()
-            if key != "Accept"
-        }
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(
-                MODELS_URL, params={"client_version": CLIENT_VERSION}, headers=headers
-            )
-            response.raise_for_status()
-            for entry in _response_models(response):
-                if entry.get("slug"):
-                    _openai_models[str(entry["slug"])] = {
-                        "name": entry.get("display_name") or entry["slug"],
-                        "context": int(entry.get("context_window") or 0),
-                    }
-    except (AuthenticationError, httpx.HTTPError, ValueError, TypeError):
-        return {}
-    return deepcopy(_openai_models)
-
-
-def cached_openai_models() -> dict[str, dict[str, Any]]:
-    return deepcopy(_openai_models)
-
-
-def clear_openai_models_cache() -> None:
-    _openai_models.clear()
-
-
-def _header_float(value: Any) -> float | None:
-    try:
-        return float(value) if value not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _header_int(value: Any) -> int | None:
-    parsed = _header_float(value)
-    return int(parsed) if parsed is not None else None
-
-
-def _header_bool(value: Any) -> bool:
-    return str(value or "").strip().lower() in {"true", "1", "yes"}
-
-
-def capture_usage_headers(headers: Mapping[str, str]) -> None:
-    global _usage_snapshot
-    if "x-codex-plan-type" not in headers and "x-codex-primary-window-minutes" not in headers:
-        return
-    windows: list[dict[str, Any]] = []
-    for window_name in ("primary", "secondary"):
-        duration = _header_int(headers.get(f"x-codex-{window_name}-window-minutes")) or 0
-        if duration:
-            resets_at = _header_int(headers.get(f"x-codex-{window_name}-reset-at"))
-            if resets_at is None:
-                reset_after = _header_int(headers.get(f"x-codex-{window_name}-reset-after-seconds"))
-                resets_at = int(time.time()) + reset_after if reset_after is not None else None
-            windows.append(
-                {
-                    "key": window_name,
-                    "used_percent": _header_float(
-                        headers.get(f"x-codex-{window_name}-used-percent")
-                    )
-                    or 0.0,
-                    "window_minutes": duration,
-                    "resets_at": resets_at,
-                }
-            )
-    _usage_snapshot = {
-        "plan_type": headers.get("x-codex-plan-type", ""),
-        "active_limit": headers.get("x-codex-active-limit", ""),
-        "captured_at": int(time.time()),
-        "credits": {
-            "has_credits": _header_bool(headers.get("x-codex-credits-has-credits")),
-            "balance": _header_float(headers.get("x-codex-credits-balance")),
-            "unlimited": _header_bool(headers.get("x-codex-credits-unlimited")),
-        },
-        "windows": windows,
-    }
-
-
-def get_usage_snapshot() -> dict[str, Any] | None:
-    return deepcopy(_usage_snapshot) if _usage_snapshot else None
-
-
-def set_usage_snapshot(usage: dict[str, Any] | None) -> None:
-    global _usage_snapshot
-    _usage_snapshot = deepcopy(usage) if usage else None
-
-
-def clear_usage_snapshot() -> None:
-    global _usage_snapshot
-    _usage_snapshot = None
 
 
 class OpenAI:
@@ -1049,22 +862,22 @@ class OpenAI:
         "openai",
         OPENAI_OAUTH_CONFIGURATION,
         flow_factory=OpenAIAccountLoginFlow,
-        token_parser=lambda payload, previous: _openai_account_from_payload(
+        token_parser=lambda payload, previous: OpenAIAccountTokens.from_payload(
             payload,
             previous if isinstance(previous, OpenAIAccountTokens) else None,
         ),
-        header_builder=lambda token, _request, session: request_openai_account_headers(
-            token, session
+        header_builder=lambda token, _request, session: OpenAIAccountTokens.request_headers(
+            cast(OpenAIAccountTokens, token), session
         ),
         authorization_factory=lambda redirect_uri, **kwargs: OAuthAuthorizationRequest(
             "openai",
             OPENAI_OAUTH_CONFIGURATION,
-            token_parser=_openai_account_from_payload,
+            token_parser=OpenAIAccountTokens.from_payload,
             redirect_uri=redirect_uri,
             **kwargs,
         ),
-        token_serializer=openai_account_tokens_to_mapping,
-        token_deserializer=openai_account_tokens_from_mapping,
+        token_serializer=OpenAIAccountTokens.to_mapping,
+        token_deserializer=OpenAIAccountTokens.from_mapping,
     )
 
     def supports(self, record: ModelRecord) -> bool:
@@ -1092,40 +905,20 @@ class OpenAI:
                 context_length=record.context_length,
                 credential_values=values,
                 request_parameters=dict(request_parameters),
+                authentication=authentication,
             )
-        resolution = authentication.resolve(
-            provider.identifier,
-            environment_variables=provider.environment_variables,
+        return LiteLLM().chat(
+            record,
+            provider,
+            values=values,
+            authentication=authentication,
+            timeout_seconds=timeout_seconds,
+            request_parameters=request_parameters,
         )
-        if not resolution.available:
-            raise AuthenticationError(f"No configured access is available for {record.provider!r}.")
-        model = LiteLLMChatModel(
-            model=f"{_SDK_PREFIXES.get(provider.npm, 'openai')}/{record.model}",
-            api_base=provider.api_base or None,
-            timeout=timeout_seconds,
-            context_length=record.context_length,
-            provider_identifier=provider.identifier,
-            provider_environment_variables=provider.environment_variables,
-            request_parameters=dict(request_parameters),
-        )
-        model._authentication = authentication
-        return model
 
 
 __all__ = [
     "OpenAI",
     "OpenAIAccountResponsesModel",
     "OpenAIAccountTokens",
-    "openai_account_tokens",
-    "openai_account_tokens_from_mapping",
-    "openai_account_tokens_to_mapping",
-    "request_openai_account_headers",
-    "valid_openai_account_tokens",
-    "fetch_openai_models",
-    "cached_openai_models",
-    "clear_openai_models_cache",
-    "capture_usage_headers",
-    "get_usage_snapshot",
-    "set_usage_snapshot",
-    "clear_usage_snapshot",
 ]
