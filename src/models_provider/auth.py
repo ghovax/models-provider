@@ -830,13 +830,13 @@ _AUTH_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "opencode": {
         "environment_variables": ("OPENCODE_API_KEY",),
         "default_base_url": "https://opencode.ai/zen/v1",
-        "headers": {"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        "headers": {"User-Agent": "opencode/1.18.29", "x-opencode-client": "cli"},
         "anonymous_api_key": "public",
     },
     "opencode-go": {
         "environment_variables": ("OPENCODE_API_KEY",),
-        "default_base_url": "https://opencode.ai/zen/v1",
-        "headers": {"User-Agent": "opencode/0.0.0", "x-opencode-client": "models-provider"},
+        "default_base_url": "https://opencode.ai/zen/go/v1",
+        "headers": {"User-Agent": "opencode/1.18.29", "x-opencode-client": "cli"},
         "anonymous_api_key": "public",
         "credential_identifier": "opencode",
     },
