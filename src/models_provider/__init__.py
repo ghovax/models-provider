@@ -1,16 +1,6 @@
-"""Independent models.dev catalogue and interchangeable model implementations."""
+"""Public model-selection and authorization interface."""
 
-from .credentials import (
-    ApiKeyCredential,
-    CredentialStore,
-    EnvironmentCredential,
-    InMemoryCredentialStore,
-    bind_credential_store,
-    current_credential_store,
-    reset_credential_store,
-)
-from .errors import AuthenticationError, ContextWindowError
-from .oauth import (
+from .auth import (
     DeviceLoginFlow,
     HostedAuthorization,
     LoginFlow,
@@ -22,75 +12,34 @@ from .oauth import (
     OAuthProvider,
     OAuthTokens,
 )
-from .oauth_providers import (
-    CHATGPT_AUTHORIZATION_URL,
-    CHATGPT_CLIENT_ID,
-    CHATGPT_LOOPBACK_REDIRECT_URI,
-    CHATGPT_OAUTH_CONFIGURATION,
-    CHATGPT_SCOPES,
-    CHATGPT_TOKEN_URL,
-    ChatGPTLoginFlow,
-    ChatGPTTokens,
-    CursorLoginFlow,
-    CursorTokens,
-    chatgpt_tokens,
-    chatgpt_tokens_from_mapping,
-    chatgpt_tokens_to_mapping,
-    cursor_tokens,
-    cursor_tokens_from_mapping,
-    cursor_tokens_to_mapping,
-    request_chatgpt_headers,
-    request_cursor_headers,
-    valid_chatgpt_tokens,
-    valid_cursor_tokens,
+from .catalogue import ModelProvider, ModelRecord, ProviderRecord
+from .client import Models
+from .errors import AuthenticationError, ContextWindowError
+from .usage import (
+    AudioUsage,
+    CacheUsage,
+    CostUsage,
+    ModelUsage,
+    TokenUsage,
+    UsageLedger,
+    UsageSnapshot,
+    UsageWindow,
 )
-from .profiles import (
-    ApiKeyResolution,
-    AuthenticationStatus,
-    ProviderAuthProfile,
-    provider_auth_profile,
-)
-from .provider_auth import ProviderAuthentication
-from .subscriptions import (
-    cached_chatgpt_models,
-    cached_cursor_models,
-    capture_usage_headers,
-    clear_chatgpt_models_cache,
-    clear_cursor_models_cache,
-    clear_usage_snapshot,
-    display_cursor_account,
-    fetch_chatgpt_models,
-    fetch_cursor_models,
-    get_usage_snapshot,
-    set_usage_snapshot,
-)
-from .core import ModelProvider, ModelUsage, ModelRecord, ProviderRecord
-from .usage import UsageLedger, UsageSnapshot, UsageWindow
-from .facade import Models
-from .chatgpt import ChatGPTResponsesModel
+
 
 __all__ = [
-    "ApiKeyCredential",
-    "ApiKeyResolution",
     "AuthenticationError",
+    "AudioUsage",
+    "CacheUsage",
     "ContextWindowError",
-    "AuthenticationStatus",
-    "ChatGPTLoginFlow",
-    "ChatGPTTokens",
-    "CHATGPT_AUTHORIZATION_URL",
-    "CHATGPT_CLIENT_ID",
-    "CHATGPT_LOOPBACK_REDIRECT_URI",
-    "CHATGPT_OAUTH_CONFIGURATION",
-    "CHATGPT_SCOPES",
-    "CHATGPT_TOKEN_URL",
-    "CredentialStore",
-    "CursorLoginFlow",
-    "CursorTokens",
+    "CostUsage",
     "DeviceLoginFlow",
-    "EnvironmentCredential",
-    "LoginFlow",
     "HostedAuthorization",
-    "InMemoryCredentialStore",
+    "LoginFlow",
+    "ModelProvider",
+    "ModelRecord",
+    "ModelUsage",
+    "Models",
     "OAuthAdapter",
     "OAuthAuthorization",
     "OAuthAuthorizationRequest",
@@ -98,40 +47,9 @@ __all__ = [
     "OAuthLoginFlow",
     "OAuthProvider",
     "OAuthTokens",
-    "ModelUsage",
-    "ModelProvider",
-    "ModelRecord",
     "ProviderRecord",
-    "ProviderAuthentication",
-    "ProviderAuthProfile",
-    "provider_auth_profile",
+    "TokenUsage",
     "UsageLedger",
     "UsageSnapshot",
     "UsageWindow",
-    "bind_credential_store",
-    "current_credential_store",
-    "Models",
-    "ChatGPTResponsesModel",
-    "reset_credential_store",
-    "request_chatgpt_headers",
-    "request_cursor_headers",
-    "chatgpt_tokens",
-    "chatgpt_tokens_from_mapping",
-    "chatgpt_tokens_to_mapping",
-    "cursor_tokens",
-    "cursor_tokens_from_mapping",
-    "cursor_tokens_to_mapping",
-    "valid_chatgpt_tokens",
-    "valid_cursor_tokens",
-    "cached_chatgpt_models",
-    "cached_cursor_models",
-    "capture_usage_headers",
-    "clear_chatgpt_models_cache",
-    "clear_cursor_models_cache",
-    "clear_usage_snapshot",
-    "display_cursor_account",
-    "fetch_chatgpt_models",
-    "fetch_cursor_models",
-    "get_usage_snapshot",
-    "set_usage_snapshot",
 ]
