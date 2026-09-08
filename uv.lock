@@ -810,6 +810,7 @@ dependencies = [
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "litellm" },
+    { name = "pydantic" },
     { name = "websockets" },
 ]
 
@@ -818,6 +819,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "langchain-core", specifier = ">=1.0" },
     { name = "litellm", specifier = ">=1.60.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
     { name = "websockets", specifier = ">=15.0,<16" },
 ]
 
