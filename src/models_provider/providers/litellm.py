@@ -348,7 +348,8 @@ class LiteLLM:
             ):
                 top_p = 0.95
             maximum_tokens = (
-                min(record.output_limit, _OPENCODE_MAXIMUM_OUTPUT_TOKENS) or _OPENCODE_MAXIMUM_OUTPUT_TOKENS
+                min(record.output_limit, _OPENCODE_MAXIMUM_OUTPUT_TOKENS)
+                or _OPENCODE_MAXIMUM_OUTPUT_TOKENS
             )
 
         resolution = authentication.resolve(
