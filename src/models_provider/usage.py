@@ -6,7 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from threading import Lock
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 __all__ = [
     "AudioUsage",
@@ -20,9 +28,36 @@ __all__ = [
 ]
 
 
-class _TokenPayload(BaseModel):
+class _UsagePayloadBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def normalize_numbers(cls, value: object, info: ValidationInfo) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, (int, float, str)):
+            return None
+        try:
+            if info.field_name in {
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "reasoning_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "input_audio_tokens",
+                "output_audio_tokens",
+            }:
+                return int(value)
+            if info.field_name == "cost_usd":
+                return float(value)
+        except (ValueError, OverflowError):
+            return None
+        return value
+
+
+class _TokenPayload(_UsagePayloadBase):
     input_tokens: int | None = Field(
         default=None, validation_alias=AliasChoices("input_tokens", "prompt_tokens")
     )
@@ -33,9 +68,7 @@ class _TokenPayload(BaseModel):
     reasoning_tokens: int | None = None
 
 
-class _CachePayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+class _CachePayload(_UsagePayloadBase):
     cache_read_tokens: int | None = Field(
         default=None,
         validation_alias=AliasChoices("cache_read_tokens", "cached_tokens", "cache_read"),
@@ -46,22 +79,16 @@ class _CachePayload(BaseModel):
     )
 
 
-class _AudioPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+class _AudioPayload(_UsagePayloadBase):
     input_audio_tokens: int | None = None
     output_audio_tokens: int | None = None
 
 
-class _CostPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+class _CostPayload(_UsagePayloadBase):
     cost_usd: float | None = Field(default=None, validation_alias=AliasChoices("cost_usd", "usd"))
 
 
-class _UsagePayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+class _UsagePayload(_UsagePayloadBase):
     tokens: _TokenPayload | None = None
     cache: _CachePayload | None = None
     audio: _AudioPayload | None = None

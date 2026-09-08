@@ -12,13 +12,14 @@ from .auth import (
     OAuthProvider,
     OAuthTokens,
 )
-from .catalogue import ModelProvider, ModelRecord, ModelUsage, ProviderRecord
+from .catalogue import ModelProvider, ModelRecord, ProviderRecord
 from .client import Models
 from .errors import AuthenticationError, ContextWindowError
 from .usage import (
     AudioUsage,
     CacheUsage,
     CostUsage,
+    ModelUsage,
     TokenUsage,
     UsageLedger,
     UsageSnapshot,

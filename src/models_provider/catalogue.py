@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .usage import ModelUsage
-
-if TYPE_CHECKING:
-    from .auth import OAuthAuthorization
+from .auth import OAuthAuthorization
 
 __all__ = [
-    "ModelUsage",
     "ModelProvider",
     "ModelRecord",
     "ProviderRecord",
@@ -37,10 +33,10 @@ class _ModelPayload(BaseModel):
     open_weights: bool = False
     modalities: Mapping[str, Sequence[str]] = Field(default_factory=dict)
     limit: Mapping[str, int] = Field(default_factory=dict)
-    cost: Mapping[str, float | None] = Field(default_factory=dict)
+    cost: Mapping[str, object] = Field(default_factory=dict)
     release_date: str = ""
     last_updated: str = ""
-    knowledge_cutoff: str = ""
+    knowledge_cutoff: str = Field(default="", validation_alias="knowledge")
     status: str = ""
     reasoning_options: tuple[Mapping[str, object], ...] = ()
 
@@ -54,7 +50,7 @@ class _ProviderPayload(BaseModel):
     env: tuple[str, ...] = ()
     doc: str = ""
     api: str = ""
-    models: Mapping[str, _ModelPayload] = Field(default_factory=dict)
+    models: Mapping[str, object] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +106,10 @@ class ModelRecord:
         model_id = definition.id.strip() or model
         modalities = definition.modalities
         limits = definition.limit
+        normalized_cost: dict[str, float] = {}
+        for key, value in definition.cost.items():
+            if isinstance(value, (int, float)):
+                normalized_cost[key] = float(value)
         return cls(
             identifier=f"{provider}/{model_id}",
             provider=provider,
@@ -132,7 +132,7 @@ class ModelRecord:
             context_length=max(0, limits.get("context", 0)),
             input_limit=max(0, limits.get("input", 0)),
             output_limit=max(0, limits.get("output", 0)),
-            cost=dict(definition.cost),
+            cost=normalized_cost,
             release_date=definition.release_date.strip(),
             last_updated=definition.last_updated.strip(),
             knowledge_cutoff=definition.knowledge_cutoff.strip(),
@@ -209,9 +209,12 @@ class ModelCatalogue:
             )
             providers.append(provider)
             for raw_model, definition in provider_data.models.items():
-                models.append(
-                    ModelRecord.from_payload(identifier, raw_model, definition.model_dump())
-                )
+                if not isinstance(definition, Mapping):
+                    continue
+                try:
+                    models.append(ModelRecord.from_payload(identifier, raw_model, definition))
+                except ValueError:
+                    continue
         return cls(providers, models)
 
     def providers(self) -> tuple[ProviderRecord, ...]:
