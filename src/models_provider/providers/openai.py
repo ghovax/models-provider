@@ -86,9 +86,9 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     context_length: int = 0
     session_id: str = ""
     timeout: float | None = 300.0
-    credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
     request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    authentication: ProviderAuthentication | None = Field(default=None, exclude=True)
+    authentication: ProviderAuthentication | None = Field(default=None, exclude=True, repr=False)
 
     @property
     def _llm_type(self) -> str:
