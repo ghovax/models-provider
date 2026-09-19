@@ -2,6 +2,12 @@
 
 Models Provider gives applications one interface for selecting models, resolving provider access, creating chat models, and collecting usage. Model metadata is loaded privately from the public [models.dev catalogue](https://models.dev).
 
+## Installation
+
+```console
+pip install models-provider
+```
+
 ## Public flow
 
 Pass provider values directly to `Models`, then select a provider-qualified model:
