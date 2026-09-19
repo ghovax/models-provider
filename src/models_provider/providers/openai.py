@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import json
 import os
 import platform
@@ -31,8 +32,10 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field
-from websockets.asyncio.client import connect
+from pydantic import Field, PrivateAttr
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
+from websockets.protocol import State
 
 from ..auth import (
     OAuthAdapter,
@@ -84,11 +87,20 @@ class OpenAIAccountResponsesModel(BaseChatModel):
 
     model: str
     context_length: int = 0
-    session_id: str = ""
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timeout: float | None = 300.0
     credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
     request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
     authentication: ProviderAuthentication | None = Field(default=None, exclude=True, repr=False)
+    _websocket: ClientConnection | None = PrivateAttr(default=None)
+    _websocket_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
+    _websocket_lock: asyncio.Lock | None = PrivateAttr(default=None)
+    _websocket_lock_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
+    _turn_state: str | None = PrivateAttr(default=None)
+    _last_request_signature: dict[str, Any] | None = PrivateAttr(default=None)
+    _last_input: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _last_output_items: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _last_response_id: str | None = PrivateAttr(default=None)
 
     @property
     def _llm_type(self) -> str:
@@ -163,13 +175,18 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             value = parameters.get(key)
             if value is not None:
                 payload[key] = value
-        if self.session_id:
-            payload["client_metadata"] = {
+        client_metadata = parameters.get("client_metadata")
+        payload["client_metadata"] = (
+            dict(client_metadata) if isinstance(client_metadata, Mapping) else {}
+        )
+        payload["client_metadata"].update(
+            {
                 "session_id": self.session_id,
                 "thread_id": self.session_id,
                 "x-codex-window-id": f"{self.session_id}:0",
             }
-            payload["prompt_cache_key"] = self.session_id
+        )
+        payload["prompt_cache_key"] = str(parameters.get("prompt_cache_key") or self.session_id)
         return payload
 
     def _to_responses_input(
@@ -202,6 +219,16 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 continue
             if isinstance(message, AIMessage):
                 additional = getattr(message, "additional_kwargs", {}) or {}
+                response_items = additional.get("response_items")
+                if (
+                    additional.get("response_items_model") == self.model
+                    and isinstance(response_items, list)
+                    and response_items
+                ):
+                    items.extend(
+                        copy.deepcopy(item) for item in response_items if isinstance(item, dict)
+                    )
+                    continue
                 if additional.get("reasoning_model") == self.model:
                     reasoning_items = additional.get("reasoning_items")
                     if isinstance(reasoning_items, list):
@@ -238,12 +265,21 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         return instructions, items
 
-    async def _headers(self) -> dict[str, str]:
+    async def _headers(self, prompt_cache_key: str) -> dict[str, str]:
         if self.authentication is None:
             raise AuthenticationError("OpenAI account authentication is not configured.")
-        return await self.authentication.request_headers(
+        headers = await self.authentication.request_headers(
             "openai", session_identifier=self.session_id
         )
+        headers.update(
+            {
+                "session-id": prompt_cache_key,
+                "thread-id": self.session_id,
+                "x-client-request-id": self.session_id,
+                "x-codex-window-id": f"{self.session_id}:0",
+            }
+        )
+        return headers
 
     @staticmethod
     def _http_error(status: int, body: str) -> Exception:
@@ -267,6 +303,11 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         cls, data: dict[str, Any], state: dict[str, Any]
     ) -> ChatGenerationChunk | None:
         event_type = data.get("type", "")
+        if event_type == "response.created":
+            response = data.get("response") or {}
+            if response.get("id"):
+                state["response_id"] = str(response["id"])
+            return None
         if event_type == "response.output_text.delta":
             output_index = int(data.get("output_index", 0) or 0)
             content_index = int(data.get("content_index", 0) or 0)
@@ -301,6 +342,8 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         if event_type == "response.output_item.done":
             item = data.get("item") or {}
+            if isinstance(item, dict):
+                state.setdefault("response_items", []).append(copy.deepcopy(item))
             if item.get("type") == "reasoning" and item.get("encrypted_content"):
                 return cls._chunk(
                     reasoning_item={
@@ -338,6 +381,9 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         if event_type == "response.completed":
             response = data.get("response") or {}
+            if response.get("id"):
+                state["response_id"] = str(response["id"])
+            state["completed"] = True
             raw_usage = response.get("usage")
             usage: Any = None
             if raw_usage:
@@ -364,7 +410,14 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     if reasoning:
                         usage["output_token_details"] = {"reasoning": reasoning}
             return ChatGenerationChunk(
-                message=AIMessageChunk(content="", usage_metadata=usage),
+                message=AIMessageChunk(
+                    content="",
+                    additional_kwargs={
+                        "response_items": copy.deepcopy(state.get("response_items", [])),
+                        "response_items_model": str(state.get("model") or ""),
+                    },
+                    usage_metadata=usage,
+                ),
                 generation_info={
                     "finish_reason": "tool_calls" if state.get("saw_tool_call") else "stop"
                 },
@@ -404,31 +457,140 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             )
         )
 
-    async def _astream_websocket(
-        self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
-    ) -> AsyncIterator[ChatGenerationChunk]:
+    def _lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._websocket_lock is None or self._websocket_lock_loop is not loop:
+            self._websocket_lock = asyncio.Lock()
+            self._websocket_lock_loop = loop
+        return self._websocket_lock
+
+    def _clear_incremental_state(self) -> None:
+        self._last_request_signature = None
+        self._last_input = []
+        self._last_output_items = []
+        self._last_response_id = None
+
+    def _discard_websocket(self) -> None:
+        self._websocket = None
+        self._websocket_loop = None
+        self._turn_state = None
+        self._clear_incremental_state()
+
+    async def _close_websocket(self) -> None:
+        connection = self._websocket
+        self._discard_websocket()
+        if connection is not None:
+            try:
+                await connection.close()
+            except Exception:  # noqa: BLE001 — closing is best effort
+                pass
+
+    @staticmethod
+    def _websocket_url() -> str:
+        parsed = urlsplit(RESPONSES_URL)
+        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
+        return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+    async def _ensure_websocket(self, headers: dict[str, str]) -> ClientConnection:
+        loop = asyncio.get_running_loop()
+        if self._websocket_loop is not None and self._websocket_loop is not loop:
+            self._discard_websocket()
+        if self._websocket is not None and self._websocket.state is State.OPEN:
+            return self._websocket
+        if self._websocket is not None:
+            await self._close_websocket()
+
         websocket_headers = dict(headers)
         websocket_headers.pop("Content-Type", None)
         websocket_headers.pop("Accept", None)
         websocket_headers["OpenAI-Beta"] = RESPONSES_WEBSOCKET_BETA
-        parsed = urlsplit(RESPONSES_URL)
-        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
-        websocket = connect(
-            urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)),
-            additional_headers=websocket_headers,
-            user_agent_header=websocket_headers.get("User-Agent"),
-            open_timeout=self.timeout,
-            close_timeout=10,
-            max_size=None,
-        )
         try:
-            connection = await websocket.__aenter__()
+            connection = await connect(
+                self._websocket_url(),
+                additional_headers=websocket_headers,
+                user_agent_header=websocket_headers.get("User-Agent"),
+                open_timeout=self.timeout,
+                close_timeout=10,
+                max_size=None,
+            )
         except Exception as error:  # noqa: BLE001 — the caller owns the HTTP fallback
             raise _ResponsesWebSocketUnavailable(str(error)) from error
+        self._websocket = connection
+        self._websocket_loop = loop
+        response = getattr(connection, "response", None)
+        response_headers = getattr(response, "headers", None)
+        if response_headers is not None:
+            self._turn_state = response_headers.get("x-codex-turn-state")
+        return connection
+
+    @staticmethod
+    def _request_signature(payload: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: copy.deepcopy(value)
+            for key, value in payload.items()
+            if key not in {"input", "client_metadata", "previous_response_id"}
+        }
+
+    def _prepare_websocket_payload(
+        self, payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+        request = copy.deepcopy(payload)
+        logical_input = copy.deepcopy(payload.get("input", []))
+        signature = self._request_signature(payload)
+        baseline = [*self._last_input, *self._last_output_items]
+        if (
+            self._last_response_id
+            and self._last_request_signature == signature
+            and len(logical_input) > len(baseline)
+            and logical_input[: len(baseline)] == baseline
+        ):
+            request["previous_response_id"] = self._last_response_id
+            request["input"] = logical_input[len(baseline) :]
+        if self._turn_state:
+            metadata = dict(request.get("client_metadata") or {})
+            metadata["x-codex-turn-state"] = self._turn_state
+            request["client_metadata"] = metadata
+        return request, logical_input, signature
+
+    def _remember_response(
+        self,
+        logical_input: list[dict[str, Any]],
+        signature: dict[str, Any],
+        state: Mapping[str, Any],
+    ) -> None:
+        response_id = state.get("response_id")
+        response_items = state.get("response_items")
+        if (
+            not state.get("completed")
+            or not response_id
+            or not isinstance(response_items, list)
+            or not response_items
+        ):
+            self._clear_incremental_state()
+            return
+        self._last_request_signature = copy.deepcopy(signature)
+        self._last_input = copy.deepcopy(logical_input)
+        self._last_output_items = [
+            copy.deepcopy(item) for item in response_items if isinstance(item, dict)
+        ]
+        self._last_response_id = str(response_id)
+
+    async def _astream_websocket(
+        self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        connection = await self._ensure_websocket(headers)
+        request, logical_input, signature = self._prepare_websocket_payload(payload)
+        serialized = json.dumps({"type": "response.create", **request}, separators=(",", ":"))
         try:
-            await connection.send(
-                json.dumps({"type": "response.create", **payload}, separators=(",", ":"))
-            )
+            await connection.send(serialized)
+        except ConnectionClosed:
+            self._discard_websocket()
+            connection = await self._ensure_websocket(headers)
+            request, logical_input, signature = self._prepare_websocket_payload(payload)
+            serialized = json.dumps({"type": "response.create", **request}, separators=(",", ":"))
+            await connection.send(serialized)
+        completed = False
+        try:
             async for message in connection:
                 if isinstance(message, bytes):
                     message = message.decode("utf-8", "replace")
@@ -444,10 +606,17 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 if chunk is not None:
                     yield chunk
                 if data.get("type") == "response.completed":
+                    self._remember_response(logical_input, signature, state)
+                    completed = True
                     return
             raise RuntimeError("OpenAI account websocket closed before response.completed")
+        except ConnectionClosed as error:
+            raise RuntimeError(
+                "OpenAI account websocket closed before response.completed"
+            ) from error
         finally:
-            await websocket.__aexit__(None, None, None)
+            if not completed:
+                await self._close_websocket()
 
     async def _astream_http(
         self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
@@ -481,19 +650,23 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        payload = self.build_payload(messages, stream=True, **kwargs)
-        headers = await self._headers()
-        state: dict[str, Any] = {
-            "saw_tool_call": False,
-            "model": self.model,
-            "context_window": self.context_window(),
-        }
-        try:
-            async for chunk in self._astream_websocket(payload, headers, state):
-                yield chunk
-        except _ResponsesWebSocketUnavailable:
-            async for chunk in self._astream_http(payload, headers, state):
-                yield chunk
+        async with self._lock():
+            payload = self.build_payload(messages, stream=True, **kwargs)
+            headers = await self._headers(str(payload["prompt_cache_key"]))
+            state: dict[str, Any] = {
+                "saw_tool_call": False,
+                "model": self.model,
+                "context_window": self.context_window(),
+                "response_items": [],
+                "completed": False,
+            }
+            try:
+                async for chunk in self._astream_websocket(payload, headers, state):
+                    yield chunk
+            except _ResponsesWebSocketUnavailable:
+                self._clear_incremental_state()
+                async for chunk in self._astream_http(payload, headers, state):
+                    yield chunk
 
     async def _agenerate(
         self,
@@ -532,9 +705,16 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(
-                self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
-            )
+
+            async def run() -> ChatResult:
+                try:
+                    return await self._agenerate(
+                        messages, stop=stop, run_manager=run_manager, **kwargs
+                    )
+                finally:
+                    await self._close_websocket()
+
+            return asyncio.run(run())
         raise RuntimeError(
             "OpenAIAccountResponsesModel cannot run synchronously inside an active event loop; use ainvoke."
         )

@@ -76,6 +76,8 @@ models.chat(
 
 Request settings are ordinary keyword arguments. The selected access implementation validates and translates them to its transport. There is no public options object and no provider-specific access class required from the caller.
 
+Reuse the returned model across related calls. Account-backed transports keep private connection and cache affinity for that model's lifetime, while message history remains owned by the caller.
+
 ## Usage values
 
 Normalized usage is grouped by measurement type:
