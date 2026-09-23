@@ -12,3 +12,11 @@ class ContextWindowError(RuntimeError):
         super().__init__(message)
         self.model = model
         self.context_window = context_window
+
+
+class TransientProviderError(RuntimeError):
+    """Raised when retrying the same request on a fresh provider connection is safe."""
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after

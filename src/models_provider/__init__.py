@@ -14,7 +14,7 @@ from .auth import (
 )
 from .catalogue import ModelProvider, ModelRecord, ProviderRecord
 from .client import Models
-from .errors import AuthenticationError, ContextWindowError
+from .errors import AuthenticationError, ContextWindowError, TransientProviderError
 from .usage import (
     AudioUsage,
     CacheUsage,
@@ -49,6 +49,7 @@ __all__ = [
     "OAuthTokens",
     "ProviderRecord",
     "TokenUsage",
+    "TransientProviderError",
     "UsageLedger",
     "UsageSnapshot",
     "UsageWindow",

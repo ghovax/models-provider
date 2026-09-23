@@ -18,7 +18,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx
 
-from .errors import AuthenticationError
+from .errors import AuthenticationError, TransientProviderError
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,13 +685,25 @@ class OAuthAdapter:
         return None
 
     async def _request_token(self, data: Mapping[str, str]) -> Mapping[str, Any]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                self.configuration.token_url,
-                **_oauth_request_kwargs(self.configuration, data),
-            )
-            response.raise_for_status()
-            payload = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    self.configuration.token_url,
+                    **_oauth_request_kwargs(self.configuration, data),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            if status in {408, 429} or status >= 500:
+                raise TransientProviderError(
+                    f"{self.provider_identifier} token endpoint temporarily returned {status}"
+                ) from error
+            raise
+        except httpx.TransportError as error:
+            raise TransientProviderError(
+                f"{self.provider_identifier} token endpoint connection failed"
+            ) from error
         if not isinstance(payload, Mapping):
             raise AuthenticationError("OAuth returned an invalid token response.")
         return payload

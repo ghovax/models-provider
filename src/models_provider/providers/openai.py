@@ -7,8 +7,10 @@ import base64
 import binascii
 import copy
 import json
+import math
 import os
 import platform
+import re
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -46,7 +48,7 @@ from ..auth import (
     ProviderAuthentication,
 )
 from ..catalogue import ModelRecord, ProviderRecord
-from ..errors import AuthenticationError, ContextWindowError
+from ..errors import AuthenticationError, ContextWindowError, TransientProviderError
 from .litellm import LiteLLM
 
 
@@ -62,8 +64,22 @@ CONTEXT_OVERFLOW_CODES = frozenset(
 
 RESPONSES_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 
+_RETRY_AFTER_PATTERN = re.compile(
+    r"try again in\s*(\d+(?:\.\d+)?)\s*(ms|s|seconds?)\b",
+    re.IGNORECASE,
+)
 
-class _ResponsesWebSocketUnavailable(RuntimeError):
+
+def _retry_after_seconds(message: str) -> float | None:
+    match = _RETRY_AFTER_PATTERN.search(message)
+    if match is None:
+        return None
+    seconds = float(match.group(1))
+    seconds = seconds / 1000 if match.group(2).lower() == "ms" else seconds
+    return seconds if math.isfinite(seconds) else None
+
+
+class _ResponsesWebSocketUnavailable(TransientProviderError):
     """The websocket handshake failed before a request was sent."""
 
 
@@ -101,6 +117,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     _last_input: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _last_output_items: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _last_response_id: str | None = PrivateAttr(default=None)
+    _websocket_failures: int = PrivateAttr(default=0)
 
     @property
     def _llm_type(self) -> str:
@@ -108,6 +125,11 @@ class OpenAIAccountResponsesModel(BaseChatModel):
 
     def context_window(self) -> int:
         return max(0, int(self.context_length or 0))
+
+    def start_turn(self) -> None:
+        """Start a user turn without discarding the reusable connection or cache prefix."""
+        self._turn_state = None
+        self._websocket_failures = 0
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
@@ -282,7 +304,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         return headers
 
     @staticmethod
-    def _http_error(status: int, body: str) -> Exception:
+    def _http_error(status: int, body: str, retry_after: str | None = None) -> Exception:
         if status in (401, 403):
             return AuthenticationError(f"OpenAI rejected the account token: {body[:800]}")
         try:
@@ -295,6 +317,19 @@ class OpenAIAccountResponsesModel(BaseChatModel):
             return ContextWindowError(
                 "The request exceeded this model's context window.",
                 model="",
+            )
+        if status in {408, 409, 429} or status >= 500:
+            try:
+                delay = float(retry_after) if retry_after is not None else None
+            except ValueError:
+                delay = None
+            if delay is not None and (not math.isfinite(delay) or delay < 0):
+                delay = None
+            if delay is None and status == 429:
+                delay = _retry_after_seconds(body)
+            return TransientProviderError(
+                f"OpenAI account endpoint temporarily returned {status}: {body[:800]}",
+                retry_after=delay,
             )
         return RuntimeError(f"OpenAI account endpoint returned {status}: {body[:800]}")
 
@@ -434,6 +469,18 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     model=str(state.get("model") or ""),
                     context_window=int(state.get("context_window") or 0),
                 )
+            if code in {
+                "rate_limit_exceeded",
+                "server_error",
+                "timeout",
+                "temporarily_unavailable",
+            }:
+                raise TransientProviderError(
+                    f"OpenAI account stream failed: {message}",
+                    retry_after=(
+                        _retry_after_seconds(message) if code == "rate_limit_exceeded" else None
+                    ),
+                )
             raise RuntimeError(f"OpenAI account stream failed: {message}")
         return None
 
@@ -484,6 +531,10 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 await connection.close()
             except Exception:  # noqa: BLE001 — closing is best effort
                 pass
+
+    async def aclose(self) -> None:
+        """Close the live transport and discard incremental response state."""
+        await self._close_websocket()
 
     @staticmethod
     def _websocket_url() -> str:
@@ -581,17 +632,25 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         connection = await self._ensure_websocket(headers)
         request, logical_input, signature = self._prepare_websocket_payload(payload)
         serialized = json.dumps({"type": "response.create", **request}, separators=(",", ":"))
-        try:
-            await connection.send(serialized)
-        except ConnectionClosed:
-            self._discard_websocket()
-            connection = await self._ensure_websocket(headers)
-            request, logical_input, signature = self._prepare_websocket_payload(payload)
-            serialized = json.dumps({"type": "response.create", **request}, separators=(",", ":"))
-            await connection.send(serialized)
+        for attempt in range(2):
+            try:
+                await asyncio.wait_for(connection.send(serialized), timeout=self.timeout)
+                break
+            except (ConnectionClosed, TimeoutError, OSError) as error:
+                await self._close_websocket()
+                if attempt:
+                    raise TransientProviderError(
+                        "OpenAI account websocket could not send the request"
+                    ) from error
+                connection = await self._ensure_websocket(headers)
+                request, logical_input, signature = self._prepare_websocket_payload(payload)
+                serialized = json.dumps(
+                    {"type": "response.create", **request}, separators=(",", ":")
+                )
         completed = False
         try:
-            async for message in connection:
+            while True:
+                message = await asyncio.wait_for(connection.recv(), timeout=self.timeout)
                 if isinstance(message, bytes):
                     message = message.decode("utf-8", "replace")
                 if not isinstance(message, str):
@@ -602,6 +661,12 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     continue
                 if not isinstance(data, dict):
                     continue
+                if data.get("type") == "response.metadata":
+                    metadata_headers = data.get("headers")
+                    if isinstance(metadata_headers, dict):
+                        value = metadata_headers.get("x-codex-turn-state")
+                        if isinstance(value, str) and value:
+                            self._turn_state = value
                 chunk = self._translate_event(data, state)
                 if chunk is not None:
                     yield chunk
@@ -610,9 +675,9 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     completed = True
                     return
             raise RuntimeError("OpenAI account websocket closed before response.completed")
-        except ConnectionClosed as error:
-            raise RuntimeError(
-                "OpenAI account websocket closed before response.completed"
+        except (ConnectionClosed, TimeoutError, OSError) as error:
+            raise TransientProviderError(
+                "OpenAI account websocket stopped before response.completed"
             ) from error
         finally:
             if not completed:
@@ -621,27 +686,34 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     async def _astream_http(
         self, payload: dict[str, Any], headers: dict[str, str], state: dict[str, Any]
     ) -> AsyncIterator[ChatGenerationChunk]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
-                "POST", RESPONSES_URL, json=payload, headers=headers
-            ) as response:
-                if response.status_code >= 400:
-                    body = (await response.aread()).decode("utf-8", "replace")
-                    raise self._http_error(response.status_code, body)
-                async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    raw = line[len("data:") :].strip()
-                    if not raw or raw == "[DONE]":
-                        continue
-                    try:
-                        data = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if isinstance(data, dict):
-                        chunk = self._translate_event(data, state)
-                        if chunk is not None:
-                            yield chunk
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream(
+                    "POST", RESPONSES_URL, json=payload, headers=headers
+                ) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", "replace")
+                        raise self._http_error(
+                            response.status_code,
+                            body,
+                            response.headers.get("Retry-After"),
+                        )
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[len("data:") :].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            data = json.loads(raw)
+                        except ValueError:
+                            continue
+                        if isinstance(data, dict):
+                            chunk = self._translate_event(data, state)
+                            if chunk is not None:
+                                yield chunk
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            raise TransientProviderError("OpenAI account HTTP stream was interrupted") from error
 
     async def _astream(
         self,
@@ -660,13 +732,38 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                 "response_items": [],
                 "completed": False,
             }
-            try:
-                async for chunk in self._astream_websocket(payload, headers, state):
-                    yield chunk
-            except _ResponsesWebSocketUnavailable:
-                self._clear_incremental_state()
+            if self._websocket_failures >= 2:
                 async for chunk in self._astream_http(payload, headers, state):
                     yield chunk
+                if not state["completed"]:
+                    raise TransientProviderError(
+                        "OpenAI account HTTP stream ended before response.completed"
+                    )
+                return
+            yielded = False
+            try:
+                async for chunk in self._astream_websocket(payload, headers, state):
+                    yielded = True
+                    yield chunk
+            except TransientProviderError:
+                self._websocket_failures += 1
+                if yielded:
+                    raise
+                self._websocket_failures = max(self._websocket_failures, 2)
+                self._clear_incremental_state()
+                state = {
+                    "saw_tool_call": False,
+                    "model": self.model,
+                    "context_window": self.context_window(),
+                    "response_items": [],
+                    "completed": False,
+                }
+                async for chunk in self._astream_http(payload, headers, state):
+                    yield chunk
+                if not state["completed"]:
+                    raise TransientProviderError(
+                        "OpenAI account HTTP stream ended before response.completed"
+                    ) from None
 
     async def _agenerate(
         self,
