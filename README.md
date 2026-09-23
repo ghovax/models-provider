@@ -78,6 +78,8 @@ Request settings are ordinary keyword arguments. The selected access implementat
 
 Reuse the returned model across related calls. Account-backed transports keep private connection and cache affinity for that model's lifetime, while message history remains owned by the caller.
 
+OpenAI account models pass LangChain image content blocks in user messages and tool results through to the Responses transport. Use an image-capable model and provide each image block with a MIME type and base64 data; text-only messages retain their existing wire format.
+
 For OpenAI account models, `start_turn()` resets the routing token at the start of a new user turn while retaining the connection and cache affinity. `await aclose()` closes the connection and clears incremental response state. A `TransientProviderError` means the host can retry the same model request; repeated WebSocket failures switch that turn to HTTP. Invalid requests and authentication errors are not classified as transient.
 
 ## Usage values

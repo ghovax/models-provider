@@ -103,6 +103,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
 
     model: str
     context_length: int = 0
+    input_modalities: tuple[str, ...] = ()
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timeout: float | None = 300.0
     credential_values: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
@@ -231,11 +232,12 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     )
                 continue
             if isinstance(message, ToolMessage):
+                content = self._image_content(message)
                 items.append(
                     {
                         "type": "function_call_output",
                         "call_id": message.tool_call_id,
-                        "output": _text(message),
+                        "output": content if content is not None else _text(message),
                     }
                 )
                 continue
@@ -278,14 +280,41 @@ class OpenAIAccountResponsesModel(BaseChatModel):
                     )
                 continue
             role = "developer" if message.additional_kwargs.get("reminder") else "user"
+            content = self._image_content(message)
             items.append(
                 {
                     "type": "message",
                     "role": role,
-                    "content": [{"type": "input_text", "text": _text(message)}],
+                    "content": content
+                    if content is not None
+                    else [{"type": "input_text", "text": _text(message)}],
                 }
             )
         return instructions, items
+
+    def _image_content(self, message: BaseMessage) -> list[dict[str, Any]] | None:
+        blocks = message.content_blocks
+        if not any(block.get("type") == "image" for block in blocks):
+            return None
+        if self.input_modalities and "image" not in self.input_modalities:
+            raise ValueError(f"Model {self.model!r} does not support image input")
+        content: list[dict[str, Any]] = []
+        for block in blocks:
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                content.append({"type": "input_text", "text": block["text"]})
+            elif block.get("type") == "image":
+                mime_type = block.get("mime_type")
+                base64_data = block.get("base64")
+                if not isinstance(mime_type, str) or not isinstance(base64_data, str):
+                    raise ValueError("Image block requires MIME type and base64 data")
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{mime_type};base64,{base64_data}",
+                        "detail": "auto",
+                    }
+                )
+        return content
 
     async def _headers(self, prompt_cache_key: str) -> dict[str, str]:
         if self.authentication is None:
@@ -1056,6 +1085,7 @@ class OpenAI:
                 model=record.model,
                 timeout=timeout_seconds,
                 context_length=record.context_length,
+                input_modalities=record.input_modalities,
                 credential_values=values,
                 request_parameters=dict(request_parameters),
                 authentication=authentication,
