@@ -114,6 +114,18 @@ class LiteLLMChatModel(BaseChatModel):
         item: dict[str, Any] = {"role": role, "content": message.content}
         if isinstance(message, ToolMessage):
             item["tool_call_id"] = message.tool_call_id
+        elif isinstance(message, AIMessage) and message.tool_calls:
+            item["tool_calls"] = [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": json.dumps(call["args"]),
+                    },
+                }
+                for call in message.tool_calls
+            ]
         return item
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
