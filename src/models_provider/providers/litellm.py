@@ -80,6 +80,7 @@ class LiteLLMChatModel(BaseChatModel):
     timeout: float | None = 300.0
     reasoning_effort: str | None = None
     context_length: int = 0
+    input_modalities: tuple[str, ...] = ()
     default_headers: dict[str, str] = Field(default_factory=dict)
     request_parameters: dict[str, Any] = Field(default_factory=dict, exclude=True)
     request_context: OpenCodeRequestContext | None = None
@@ -99,8 +100,7 @@ class LiteLLMChatModel(BaseChatModel):
     def context_window(self) -> int:
         return self.context_length
 
-    @staticmethod
-    def _message(message: BaseMessage) -> dict[str, Any]:
+    def _message(self, message: BaseMessage) -> dict[str, Any]:
         if isinstance(message, SystemMessage):
             role = "system"
         elif isinstance(message, ToolMessage):
@@ -111,7 +111,32 @@ class LiteLLMChatModel(BaseChatModel):
             role = "user"
         else:
             role = "user"
-        item: dict[str, Any] = {"role": role, "content": message.content}
+        content: Any = message.content
+        if isinstance(message, HumanMessage):
+            blocks = message.content_blocks
+            if any(block.get("type") == "image" for block in blocks):
+                if self.input_modalities and "image" not in self.input_modalities:
+                    raise ValueError(f"Model {self.model!r} does not support image input")
+                content = []
+                for block in blocks:
+                    if block.get("type") == "text" and isinstance(block.get("text"), str):
+                        content.append({"type": "text", "text": block["text"]})
+                    elif block.get("type") == "image":
+                        mime_type, base64_data = block.get("mime_type"), block.get("base64")
+                        if not isinstance(mime_type, str) or not isinstance(base64_data, str):
+                            raise ValueError("Image block requires MIME type and base64 data")
+                        content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_data}",
+                                    "detail": "auto",
+                                },
+                            }
+                        )
+                    else:
+                        raise ValueError(f"Unsupported content block: {block.get('type')!r}")
+        item: dict[str, Any] = {"role": role, "content": content}
         if isinstance(message, ToolMessage):
             item["tool_call_id"] = message.tool_call_id
         elif isinstance(message, AIMessage) and message.tool_calls:
@@ -379,6 +404,7 @@ class LiteLLM:
             supports_temperature=record.temperature if is_opencode else True,
             timeout=timeout_seconds,
             context_length=record.context_length,
+            input_modalities=record.input_modalities,
             request_context=OpenCodeRequestContext(session_id=uuid4().hex) if is_opencode else None,
             provider_identifier=provider.identifier,
             provider_environment_variables=provider.environment_variables,
