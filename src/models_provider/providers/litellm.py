@@ -227,6 +227,15 @@ class LiteLLMChatModel(BaseChatModel):
             context = request_context or self.request_context
             if context is None or not context.session_id.strip():
                 raise AuthenticationError("OpenCode models require a request context.")
+            reserved = {
+                "user-agent", "x-opencode-client", "x-opencode-session",
+                "x-opencode-request", "authorization",
+            }
+            if context.project_id.strip():
+                reserved.add("x-opencode-project")
+            if context.parent_session_id.strip():
+                reserved.add("x-parent-session-id")
+            headers = {name: value for name, value in headers.items() if name.lower() not in reserved}
             request_id = uuid4().hex
             headers.update(
                 {
@@ -252,8 +261,6 @@ class LiteLLMChatModel(BaseChatModel):
                     **(params.get("extra_body") or {}),
                     "chat_template_args": {"enable_thinking": True},
                 }
-        if headers:
-            params["extra_headers"] = headers
         params.update(
             {
                 key: value
@@ -261,6 +268,19 @@ class LiteLLMChatModel(BaseChatModel):
                 if value is not None
             }
         )
+        custom_headers = params.get("extra_headers") or {}
+        if not isinstance(custom_headers, Mapping):
+            raise ValueError("extra_headers must be a mapping")
+        if is_opencode:
+            reserved = {name.lower() for name in headers}
+            custom_headers = {
+                name: value
+                for name, value in custom_headers.items()
+                if name.lower() not in reserved
+            }
+            params["extra_headers"] = {**custom_headers, **headers}
+        elif headers or custom_headers:
+            params["extra_headers"] = {**headers, **custom_headers}
         return params
 
     def _response(self, response: Any) -> ChatResult:
@@ -285,9 +305,12 @@ class LiteLLMChatModel(BaseChatModel):
                 }
             )
         raw_usage = getattr(response, "usage", None)
-        usage_payload = (
-            raw_usage if isinstance(raw_usage, Mapping) else getattr(raw_usage, "__dict__", {})
-        )
+        if isinstance(raw_usage, Mapping):
+            usage_payload = raw_usage
+        elif callable(getattr(raw_usage, "model_dump", None)):
+            usage_payload = raw_usage.model_dump(exclude_none=True)
+        else:
+            usage_payload = getattr(raw_usage, "__dict__", {})
         usage = ModelUsage.from_mapping(usage_payload)
         usage_metadata = {
             "input_tokens": usage.tokens.input_tokens,

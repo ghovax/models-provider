@@ -34,27 +34,26 @@ class _UsagePayloadBase(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def normalize_numbers(cls, value: object, info: ValidationInfo) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, (int, float, str)):
+        if info.field_name not in {
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "input_audio_tokens",
+            "output_audio_tokens",
+            "cost_usd",
+        }:
+            return value
+        if value is None or not isinstance(value, (int, float, str)):
             return None
         try:
-            if info.field_name in {
-                "input_tokens",
-                "output_tokens",
-                "total_tokens",
-                "reasoning_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "input_audio_tokens",
-                "output_audio_tokens",
-            }:
-                return int(value)
             if info.field_name == "cost_usd":
                 return float(value)
+            return int(value)
         except (ValueError, OverflowError):
             return None
-        return value
 
 
 class _TokenPayload(_UsagePayloadBase):
@@ -75,7 +74,9 @@ class _CachePayload(_UsagePayloadBase):
     )
     cache_write_tokens: int | None = Field(
         default=None,
-        validation_alias=AliasChoices("cache_write_tokens", "cache_creation", "cache_write"),
+        validation_alias=AliasChoices(
+            "cache_write_tokens", "cache_creation_input_tokens", "cache_creation", "cache_write"
+        ),
     )
 
 
@@ -102,9 +103,12 @@ class _UsagePayload(_UsagePayloadBase):
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
     cache_read_tokens: int | None = Field(
-        default=None, validation_alias=AliasChoices("cache_read_tokens", "cached_tokens")
+        default=None,
+        validation_alias=AliasChoices("cache_read_tokens", "cached_tokens", "cache_read_input_tokens"),
     )
-    cache_write_tokens: int | None = None
+    cache_write_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("cache_write_tokens", "cache_creation_input_tokens")
+    )
     input_audio_tokens: int | None = None
     output_audio_tokens: int | None = None
     cost_usd: float | None = None
