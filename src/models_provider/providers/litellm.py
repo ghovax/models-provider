@@ -100,6 +100,17 @@ class LiteLLMChatModel(BaseChatModel):
     def context_window(self) -> int:
         return self.context_length
 
+    def _image_part(self, block: dict[str, Any]) -> dict[str, Any]:
+        if self.input_modalities and "image" not in self.input_modalities:
+            raise ValueError(f"Model {self.model!r} does not support image input")
+        mime_type, base64_data = block.get("mime_type"), block.get("base64")
+        if not isinstance(mime_type, str) or not isinstance(base64_data, str):
+            raise ValueError("Image block requires MIME type and base64 data")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{base64_data}", "detail": "auto"},
+        }
+
     def _message(self, message: BaseMessage) -> dict[str, Any]:
         if isinstance(message, SystemMessage):
             role = "system"
@@ -112,30 +123,19 @@ class LiteLLMChatModel(BaseChatModel):
         else:
             role = "user"
         content: Any = message.content
-        if isinstance(message, HumanMessage):
+        if isinstance(message, (HumanMessage, ToolMessage)):
             blocks = message.content_blocks
             if any(block.get("type") == "image" for block in blocks):
-                if self.input_modalities and "image" not in self.input_modalities:
-                    raise ValueError(f"Model {self.model!r} does not support image input")
-                content = []
+                parts: list[dict[str, Any]] = []
                 for block in blocks:
                     if block.get("type") == "text" and isinstance(block.get("text"), str):
-                        content.append({"type": "text", "text": block["text"]})
+                        parts.append({"type": "text", "text": block["text"]})
                     elif block.get("type") == "image":
-                        mime_type, base64_data = block.get("mime_type"), block.get("base64")
-                        if not isinstance(mime_type, str) or not isinstance(base64_data, str):
-                            raise ValueError("Image block requires MIME type and base64 data")
-                        content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_data}",
-                                    "detail": "auto",
-                                },
-                            }
-                        )
+                        if isinstance(message, HumanMessage):
+                            parts.append(self._image_part(block))
                     else:
                         raise ValueError(f"Unsupported content block: {block.get('type')!r}")
+                content = parts or ""
         item: dict[str, Any] = {"role": role, "content": content}
         if isinstance(message, ToolMessage):
             item["tool_call_id"] = message.tool_call_id
@@ -152,6 +152,25 @@ class LiteLLMChatModel(BaseChatModel):
                 for call in message.tool_calls
             ]
         return item
+
+    def _messages(self, messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
+        """Keep text-only tool replies together, then provide their images as vision input."""
+        items: list[dict[str, Any]] = []
+        images: list[dict[str, Any]] = []
+        for message in messages:
+            if images and not isinstance(message, ToolMessage):
+                items.append({"role": "user", "content": images})
+                images = []
+            items.append(self._message(message))
+            if isinstance(message, ToolMessage):
+                images.extend(
+                    self._image_part(block)
+                    for block in message.content_blocks
+                    if block.get("type") == "image"
+                )
+        if images:
+            items.append({"role": "user", "content": images})
+        return items
 
     def _parameters(self, **kwargs: Any) -> dict[str, Any]:
         request_context = kwargs.pop("opencode_request_context", None)
@@ -298,7 +317,7 @@ class LiteLLMChatModel(BaseChatModel):
         del run_manager
         parameters = self._parameters(stop=stop, **kwargs)
         response = litellm.completion(
-            messages=[self._message(message) for message in messages], **parameters
+            messages=self._messages(messages), **parameters
         )
         return self._response(response)
 
@@ -314,7 +333,7 @@ class LiteLLMChatModel(BaseChatModel):
             await self._authentication.ensure_valid(self.provider_identifier)
         parameters = self._parameters(stop=stop, **kwargs)
         response = await litellm.acompletion(
-            messages=[self._message(message) for message in messages], **parameters
+            messages=self._messages(messages), **parameters
         )
         return self._response(response)
 
