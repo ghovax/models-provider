@@ -23,6 +23,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
+    message_chunk_to_message,
     BaseMessage,
     SystemMessage,
     ToolMessage,
@@ -140,7 +141,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         self,
         tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
         *,
-        tool_choice: str | None = None,
+        tool_choice: str | dict[str, Any] | bool | None = None,
         parallel_tool_calls: bool | None = None,
         **kwargs: Any,
     ) -> Runnable[Any, Any]:
@@ -157,13 +158,30 @@ class OpenAIAccountResponsesModel(BaseChatModel):
     ) -> dict[str, Any]:
         instructions, input_items = self._to_responses_input(messages)
         parameters = {**self.request_parameters, **kwargs}
+        choice = parameters.get("tool_choice")
+        if isinstance(choice, bool):
+            choice = "required" if choice else "none"
+        elif isinstance(choice, str):
+            choice = (
+                "required"
+                if choice == "any"
+                else choice
+                if choice in ("auto", "none", "required")
+                else {"type": "function", "name": choice}
+            )
+        elif (
+            isinstance(choice, Mapping)
+            and choice.get("type") == "function"
+            and isinstance(choice.get("function"), Mapping)
+        ):
+            choice = {"type": "function", "name": choice["function"].get("name")}
         payload: dict[str, Any] = {
             "model": self.model,
             "input": input_items,
             "store": False,
             "stream": stream,
             "parallel_tool_calls": parameters.get("parallel_tool_calls", True),
-            "tool_choice": parameters.get("tool_choice") or "auto",
+            "tool_choice": choice or "auto",
             "reasoning": {
                 "effort": parameters.get("reasoning_effort"),
                 "summary": "auto",
@@ -293,7 +311,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         return instructions, items
 
     def _image_content(self, message: BaseMessage) -> list[dict[str, Any]] | None:
-        blocks = message.content_blocks
+        blocks: list[dict[str, Any]] = [dict(block) for block in message.content_blocks]
         if not any(block.get("type") == "image" for block in blocks):
             return None
         if self.input_modalities and "image" not in self.input_modalities:
@@ -808,18 +826,7 @@ class OpenAIAccountResponsesModel(BaseChatModel):
         aggregate = add_ai_message_chunks(chunks[0], *chunks[1:]) if chunks else None
         if aggregate is None:
             return ChatResult(generations=[])
-        return ChatResult(
-            generations=[
-                ChatGeneration(
-                    message=AIMessage(
-                        content=aggregate.content,
-                        tool_calls=list(aggregate.tool_calls or []),
-                        additional_kwargs=aggregate.additional_kwargs,
-                        usage_metadata=aggregate.usage_metadata,
-                    )
-                )
-            ]
-        )
+        return ChatResult(generations=[ChatGeneration(message=message_chunk_to_message(aggregate))])
 
     def _generate(
         self,

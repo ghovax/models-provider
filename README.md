@@ -28,7 +28,7 @@ model = models.chat(
 answer = model.invoke("Explain spaced repetition in two sentences.")
 ```
 
-`Models()` fetches the fixed models.dev catalogue once during initialization and caches it internally. Applications do not load or construct a catalogue.
+`Models()` fetches the fixed models.dev catalogue once during initialization and caches it internally. `models.providers()` and `models.list()` expose typed provider and model metadata, including friendly names. Applications do not load or construct a catalogue.
 
 The model identifier describes the model publisher, not the authentication mechanism. The access implementation is selected internally from the provider and the supplied values. For example, `openai/gpt-5` remains the model identifier when the available access is an API key or an OpenAI account session.
 
@@ -76,9 +76,13 @@ models.chat(
 
 Request settings are ordinary keyword arguments. The selected access implementation validates and translates them to its transport. There is no public options object and no provider-specific access class required from the caller.
 
+Use `model.bind_tools(...)` and `model.astream(...)` for typed incremental text, reasoning, and tool-call chunks. Streaming transports close when iteration ends or is cancelled; usage is reported when supplied by the provider.
+
 Reuse the returned model across related calls. Account-backed transports keep private connection and cache affinity for that model's lifetime, while message history remains owned by the caller.
 
 OpenAI account models pass LangChain image content blocks in user messages and tool results through to the Responses transport. Use an image-capable model and provide each image block with a MIME type and base64 data; text-only messages retain their existing wire format.
+
+For OpenCode, pass an `OpenCodeRequestContext(session_id=...)` through `opencode_request_context` to reuse the conversation’s routing and cache identity. Explicit provider values take precedence over shared credential aliases.
 
 For OpenAI account models, `start_turn()` resets the routing token at the start of a new user turn while retaining the connection and cache affinity. `await aclose()` closes the connection and clears incremental response state. A `TransientProviderError` means the host can retry the same model request; repeated WebSocket failures switch that turn to HTTP. Invalid requests and authentication errors are not classified as transient.
 

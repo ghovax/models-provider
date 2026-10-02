@@ -14,6 +14,7 @@ from .auth import (
 )
 from .catalogue import ModelProvider, ModelRecord, ProviderRecord
 from .client import Models
+from .providers.litellm import OpenCodeRequestContext
 from .errors import AuthenticationError, ContextWindowError, TransientProviderError
 from .usage import (
     AudioUsage,
@@ -48,6 +49,7 @@ __all__ = [
     "OAuthProvider",
     "OAuthTokens",
     "ProviderRecord",
+    "OpenCodeRequestContext",
     "TokenUsage",
     "TransientProviderError",
     "UsageLedger",

@@ -22,6 +22,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
+    message_chunk_to_message,
     BaseMessage,
     SystemMessage,
     ToolMessage,
@@ -693,7 +694,9 @@ class CursorChatModel(BaseChatModel):
         parallel_tool_calls: bool | None = None,
         **kwargs: Any,
     ) -> Runnable[Any, Any]:
-        del tool_choice, parallel_tool_calls
+        del parallel_tool_calls
+        if tool_choice not in (None, "auto"):
+            raise ValueError("Cursor does not support forcing a tool choice.")
         return self.bind(tools=[convert_to_openai_tool(tool) for tool in tools], **kwargs)
 
     @staticmethod
@@ -894,6 +897,16 @@ class CursorChatModel(BaseChatModel):
                                 ),
                                 generation_info={"finish_reason": "tool_calls"},
                             )
+                            yield ChatGenerationChunk(
+                                message=AIMessageChunk(
+                                    content="",
+                                    usage_metadata={
+                                        "input_tokens": input_tokens,
+                                        "output_tokens": output_tokens,
+                                        "total_tokens": input_tokens + output_tokens,
+                                    },
+                                )
+                            )
                             return
                         if server_message.turn_ended:
                             yield ChatGenerationChunk(
@@ -939,18 +952,7 @@ class CursorChatModel(BaseChatModel):
         aggregate = add_ai_message_chunks(chunks[0], *chunks[1:]) if chunks else None
         if aggregate is None:
             return ChatResult(generations=[])
-        return ChatResult(
-            generations=[
-                ChatGeneration(
-                    message=AIMessage(
-                        content=aggregate.content,
-                        tool_calls=list(aggregate.tool_calls or []),
-                        additional_kwargs=aggregate.additional_kwargs,
-                        usage_metadata=aggregate.usage_metadata,
-                    )
-                )
-            ]
-        )
+        return ChatResult(generations=[ChatGeneration(message=message_chunk_to_message(aggregate))])
 
     def _generate(
         self,

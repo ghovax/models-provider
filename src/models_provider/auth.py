@@ -918,9 +918,9 @@ class ProviderAuthentication:
     ) -> ApiKeyResolution:
         profile = self.profile(provider_identifier, environment_variables=environment_variables)
         provider = profile.identifier
-        configured = self._values.get(profile.credential_identifier or provider)
-        if configured is None:
-            configured = self._values.get(provider_identifier)
+        configured = self._values.get(provider)
+        if configured is None and profile.credential_identifier:
+            configured = self._values.get(profile.credential_identifier)
         configured = _resolve_value(configured)
         environment: dict[str, str] = {}
         key = ""
@@ -959,7 +959,9 @@ class ProviderAuthentication:
         if adapter is None:
             return None
         profile = self.profile(provider)
-        value = self._values.get(profile.credential_identifier or provider)
+        value = self._values.get(provider)
+        if value is None and profile.credential_identifier:
+            value = self._values.get(profile.credential_identifier)
         if isinstance(value, OAuthTokens):
             return value
         if isinstance(value, Mapping):

@@ -7,7 +7,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from .catalogue import ModelCatalogue, ModelRecord
+from .catalogue import ModelCatalogue, ModelRecord, ProviderRecord
 from .auth import OAuthAuthorization
 from .providers import ProviderRegistry
 
@@ -48,6 +48,10 @@ class Models:
         )
         self._catalogue = _fetch_models(timeout_seconds=timeout_seconds)
         self._runtime = ProviderRegistry(self._catalogue)
+
+    def providers(self) -> tuple[ProviderRecord, ...]:
+        """Return the friendly provider metadata from models.dev."""
+        return self._catalogue.providers()
 
     def list(self, provider: str | None = None) -> tuple[ModelRecord, ...]:
         """Return catalogue records; the catalogue itself remains private."""

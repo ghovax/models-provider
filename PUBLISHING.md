@@ -1,6 +1,6 @@
 # Publishing
 
-Models Provider must be published before packages that depend on it, including Codebind.
+Models Provider must be published before packages that depend on it, including Aster.
 
 ## One-time PyPI setup
 
