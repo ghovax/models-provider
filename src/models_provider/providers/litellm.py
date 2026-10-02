@@ -511,6 +511,8 @@ class LiteLLMChatModel(BaseChatModel):
             raise
         finally:
             close = getattr(response, "close", None)
+            if not callable(close):
+                close = getattr(getattr(response, "completion_stream", None), "close", None)
             if callable(close):
                 close()
 
